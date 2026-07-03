@@ -1,7 +1,9 @@
 "use client";
 
-// CardSwap — perspective card cycling animation (GSAP), adapted for the
-// AURA light theme from the reference implementation.
+// CardSwap — scroll-driven deck (GSAP ScrollTrigger).
+// The section pins while the user scrolls: cards first fly into the stack,
+// then each scroll step cycles the front card away so EVERY card gets its
+// moment in front. Scrolling back up plays the whole sequence in reverse.
 
 import React, {
   Children,
@@ -13,7 +15,6 @@ import React, {
   RefObject,
   useEffect,
   useMemo,
-  useRef,
 } from "react";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
@@ -25,11 +26,12 @@ export interface CardSwapProps {
   height?: number | string;
   cardDistance?: number;
   verticalDistance?: number;
-  delay?: number;
-  pauseOnHover?: boolean;
+  /** CSS selector of the section to pin while the deck cycles (e.g. "#agents") */
+  pinTrigger?: string;
+  /** Scroll distance (px) the pinned deck sequence occupies */
+  scrollLength?: number;
   onCardClick?: (idx: number) => void;
   skewAmount?: number;
-  easing?: "linear" | "elastic";
   children: ReactNode;
 }
 
@@ -63,204 +65,96 @@ const makeSlot = (i: number, distX: number, distY: number, total: number): Slot 
   zIndex: total - i,
 });
 
-const placeNow = (el: HTMLElement, slot: Slot, skew: number) =>
-  gsap.set(el, {
-    x: slot.x,
-    y: slot.y,
-    z: slot.z,
-    xPercent: -50,
-    yPercent: -50,
-    skewY: skew,
-    transformOrigin: "center center",
-    zIndex: slot.zIndex,
-    force3D: true,
-  });
-
 export const CardSwap: React.FC<CardSwapProps> = ({
   width = 500,
   height = 400,
   cardDistance = 60,
   verticalDistance = 70,
-  delay = 5000,
-  pauseOnHover = false,
+  pinTrigger,
+  scrollLength = 2600,
   onCardClick,
   skewAmount = 6,
-  easing = "elastic",
   children,
 }) => {
-  const config =
-    easing === "elastic"
-      ? {
-          ease: "elastic.out(0.6,0.9)",
-          durDrop: 2,
-          durMove: 2,
-          durReturn: 2,
-          promoteOverlap: 0.9,
-          returnDelay: 0.05,
-        }
-      : {
-          ease: "power1.inOut",
-          durDrop: 0.8,
-          durMove: 0.8,
-          durReturn: 0.8,
-          promoteOverlap: 0.45,
-          returnDelay: 0.2,
-        };
-
   const childArr = useMemo(() => Children.toArray(children) as ReactElement<CardProps>[], [children]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const refs = useMemo<CardRef[]>(() => childArr.map(() => React.createRef<HTMLDivElement>()), [childArr.length]);
-  const order = useRef<number[]>(Array.from({ length: childArr.length }, (_, i) => i));
-  const tlRef = useRef<gsap.core.Timeline | null>(null);
-  const intervalRef = useRef<number>(0);
-  const container = useRef<HTMLDivElement>(null);
+  const container = React.useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const total = refs.length;
-    refs.forEach((r, i) => {
-      if (r.current) {
-        placeNow(r.current, makeSlot(i, cardDistance, verticalDistance, total), skewAmount);
-      }
+    if (total < 2) return;
+    const els = refs.map((r) => r.current).filter(Boolean) as HTMLDivElement[];
+    if (els.length !== total) return;
+    const slot = (i: number) => makeSlot(i, cardDistance, verticalDistance, total);
+
+    // start hidden below their slots
+    els.forEach((el, i) => {
+      const s = slot(i);
+      gsap.set(el, {
+        x: s.x + 140,
+        y: s.y + 420,
+        z: s.z,
+        xPercent: -50,
+        yPercent: -50,
+        opacity: 0,
+        rotate: 8,
+        skewY: skewAmount,
+        transformOrigin: "center center",
+        zIndex: s.zIndex,
+        force3D: true,
+      });
     });
 
-    const swap = () => {
-      if (order.current.length < 2) return;
-      const [front, ...rest] = order.current;
-      const elFront = refs[front].current;
-      if (!elFront) return;
-
-      const tl = gsap.timeline();
-      tlRef.current = tl;
-
-      tl.to(elFront, {
-        y: "+=500",
-        duration: config.durDrop,
-        ease: config.ease,
-      });
-
-      tl.addLabel("promote", `-=${config.durDrop * config.promoteOverlap}`);
-      rest.forEach((idx, i) => {
-        const el = refs[idx].current;
-        if (!el) return;
-        const slot = makeSlot(i, cardDistance, verticalDistance, refs.length);
-        tl.set(el, { zIndex: slot.zIndex }, "promote");
-        tl.to(
-          el,
-          {
-            x: slot.x,
-            y: slot.y,
-            z: slot.z,
-            duration: config.durMove,
-            ease: config.ease,
-          },
-          `promote+=${i * 0.15}`
-        );
-      });
-
-      const backSlot = makeSlot(refs.length - 1, cardDistance, verticalDistance, refs.length);
-      tl.addLabel("return", `promote+=${config.durMove * config.returnDelay}`);
-      tl.call(
-        () => {
-          gsap.set(elFront, { zIndex: backSlot.zIndex });
-        },
-        undefined,
-        "return"
-      );
-
-      tl.to(
-        elFront,
-        {
-          x: backSlot.x,
-          y: backSlot.y,
-          z: backSlot.z,
-          duration: config.durReturn,
-          ease: config.ease,
-        },
-        "return"
-      );
-
-      tl.call(() => {
-        order.current = [...rest, front];
-      });
-    };
-
-    // Scroll-scrubbed entrance: as the section scrolls in, cards fly into the
-    // stack one after another; scrolling back up reverses them out again.
-    // The auto-swap loop only runs once the stack is fully assembled.
-    let assembled = false;
-    let startTimer = 0;
-    const startLoop = () => {
-      clearInterval(intervalRef.current);
-      intervalRef.current = window.setInterval(swap, delay);
-    };
-    const stopLoop = () => {
-      clearInterval(intervalRef.current);
-      window.clearTimeout(startTimer);
-    };
-
-    const entrance = gsap.timeline({
+    const tl = gsap.timeline({
       scrollTrigger: {
-        trigger: container.current,
-        start: "top 92%",
-        end: "top 28%",
+        trigger: pinTrigger ?? container.current,
+        pin: pinTrigger ?? container.current,
+        start: "top top",
+        end: `+=${scrollLength}`,
         scrub: 0.5,
-        onUpdate: (self) => {
-          if (self.progress >= 0.98) {
-            if (!assembled) {
-              assembled = true;
-              startTimer = window.setTimeout(startLoop, 700);
-            }
-          } else if (assembled) {
-            // scrolling back up: freeze the shuffle, hand control to the scrub
-            assembled = false;
-            stopLoop();
-            tlRef.current?.kill();
-            order.current = Array.from({ length: total }, (_, i) => i);
-            // restore canonical stacking for the reversed scrub
-            refs.forEach((r, i) => {
-              if (r.current) gsap.set(r.current, { zIndex: total - i, skewY: skewAmount, z: makeSlot(i, cardDistance, verticalDistance, total).z });
-            });
-          }
-        },
+        anticipatePin: 1,
       },
     });
 
-    refs.forEach((r, i) => {
-      if (!r.current) return;
-      const slot = makeSlot(i, cardDistance, verticalDistance, total);
-      entrance.fromTo(
-        r.current,
-        { x: slot.x + 140, y: slot.y + 420, opacity: 0, rotate: 8 },
-        { x: slot.x, y: slot.y, opacity: 1, rotate: 0, duration: 1, ease: "power2.out" },
-        i * 0.45
-      );
+    // Phase 1 — cards fly into the stack one after another
+    els.forEach((el, i) => {
+      const s = slot(i);
+      tl.to(el, { x: s.x, y: s.y, opacity: 1, rotate: 0, duration: 0.8, ease: "power2.out" }, i * 0.3);
     });
 
-    const node = container.current;
-    const pause = () => {
-      tlRef.current?.pause();
-      clearInterval(intervalRef.current);
-    };
-    const resume = () => {
-      if (!assembled) return;
-      tlRef.current?.play();
-      startLoop();
-    };
-    if (pauseOnHover && node) {
-      node.addEventListener("mouseenter", pause);
-      node.addEventListener("mouseleave", resume);
+    // Phase 2 — cycle the deck: every card comes to the front once
+    let order = Array.from({ length: total }, (_, i) => i);
+    let at = total * 0.3 + 0.9; // after entrance settles
+    for (let step = 0; step < total - 1; step++) {
+      const [front, ...rest] = order;
+      const frontEl = els[front];
+
+      // front card dives down and away
+      tl.to(frontEl, { y: slot(0).y + 560, rotate: 7, duration: 0.55, ease: "power1.in" }, at);
+      // the rest promote one slot forward
+      rest.forEach((idx, i) => {
+        const s = slot(i);
+        tl.set(els[idx], { zIndex: s.zIndex }, at + 0.12);
+        tl.to(els[idx], { x: s.x, y: s.y, z: s.z, duration: 0.55, ease: "power1.inOut" }, at + 0.15);
+      });
+      // front card tucks into the back of the stack
+      const back = slot(total - 1);
+      tl.set(frontEl, { zIndex: back.zIndex }, at + 0.55);
+      tl.to(frontEl, { x: back.x, y: back.y, z: back.z, rotate: 0, duration: 0.55, ease: "power1.out" }, at + 0.6);
+
+      order = [...rest, front];
+      at += 1.35;
     }
+    // small settle beat at the end of the pin
+    tl.to({}, { duration: 0.4 }, at);
+
     return () => {
-      entrance.scrollTrigger?.kill();
-      entrance.kill();
-      if (pauseOnHover && node) {
-        node.removeEventListener("mouseenter", pause);
-        node.removeEventListener("mouseleave", resume);
-      }
-      stopLoop();
+      tl.scrollTrigger?.kill();
+      tl.kill();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cardDistance, verticalDistance, delay, pauseOnHover, skewAmount, easing, refs]);
+  }, [cardDistance, verticalDistance, skewAmount, pinTrigger, scrollLength, refs]);
 
   const rendered = childArr.map((child, i) =>
     isValidElement<CardProps>(child)

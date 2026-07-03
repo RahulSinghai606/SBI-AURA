@@ -185,8 +185,8 @@ export default function Home() {
       <ExplodedView />
 
       {/* ───────────── AGENT SWARM + CARDSWAP ───────────── */}
-      <section id="agents" className="relative py-32 bg-surface overflow-hidden">
-        <div className="mx-auto max-w-7xl px-6 grid lg:grid-cols-2 gap-16 items-center">
+      <section id="agents" className="relative min-h-screen flex items-center bg-surface overflow-hidden">
+        <div className="mx-auto max-w-7xl px-6 py-24 grid lg:grid-cols-2 gap-16 items-center">
           <motion.div {...fadeUp}>
             <p className="text-xs font-semibold tracking-[0.3em] uppercase text-cyan mb-4">The agent swarm</p>
             <h2 className="font-display text-4xl md:text-5xl font-bold text-navy leading-tight">
@@ -210,7 +210,7 @@ export default function Home() {
           </motion.div>
 
           <div className="relative h-[460px] flex items-center justify-center lg:justify-end lg:pr-16">
-            <CardSwap width={370} height={300} cardDistance={44} verticalDistance={48} delay={3600} pauseOnHover skewAmount={4}>
+            <CardSwap width={370} height={300} cardDistance={44} verticalDistance={48} skewAmount={4} pinTrigger="#agents" scrollLength={2800}>
               {AGENT_CARDS.map((a) => (
                 <Card key={a.name} className="p-0 overflow-hidden">
                   <div className="h-full w-full flex flex-col">
