@@ -22,7 +22,7 @@ gsap.registerPlugin(ScrollTrigger);
 const PARTS = [
   { key: "signals", label: "Signals", sub: "Txns · app · life events · AA", Icon: Radio, explode: { x: -420, y: -190, r: -14 }, final: { x: -440, y: 210 } },
   { key: "memory", label: "Memory Layer", sub: "Episodic + semantic recall", Icon: Database, explode: { x: -250, y: 230, r: 10 }, final: { x: -264, y: 210 } },
-  { key: "reasoning", label: "Reasoning Engine", sub: "Intent & life-event inference", Icon: BrainCircuit, explode: { x: 0, y: -260, r: 6 }, final: { x: -88, y: 210 } },
+  { key: "reasoning", label: "Reasoning Engine", sub: "Intent & life-event inference", Icon: BrainCircuit, explode: { x: 160, y: -160, r: 6 }, final: { x: -88, y: 210 } },
   { key: "decision", label: "Decision Engine", sub: "RBI / DPDP guardrails", Icon: Scale, explode: { x: 260, y: 235, r: -8 }, final: { x: 88, y: 210 } },
   { key: "engagement", label: "Engagement Engine", sub: "Tone · timing · 22 languages", Icon: MessagesSquare, explode: { x: 430, y: -175, r: 12 }, final: { x: 264, y: 210 } },
   { key: "channels", label: "Channels", sub: "YONO · WhatsApp · voice · branch", Icon: Smartphone, explode: { x: 470, y: 90, r: -6 }, final: { x: 440, y: 210 } },

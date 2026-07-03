@@ -117,6 +117,8 @@ export const CardSwap: React.FC<CardSwapProps> = ({
     refs.forEach((r, i) => {
       if (r.current) {
         placeNow(r.current, makeSlot(i, cardDistance, verticalDistance, total), skewAmount);
+        // hidden below their slot until the section scrolls into view
+        gsap.set(r.current, { opacity: 0, y: `+=140` });
       }
     });
 
@@ -181,28 +183,66 @@ export const CardSwap: React.FC<CardSwapProps> = ({
       });
     };
 
-    intervalRef.current = window.setInterval(swap, delay);
+    // Scroll-driven lifecycle: cards rise into their slots when the section
+    // enters the viewport, and auto-swapping runs only while visible.
+    let entered = false;
+    const startLoop = () => {
+      clearInterval(intervalRef.current);
+      intervalRef.current = window.setInterval(swap, delay);
+    };
+    const stopLoop = () => clearInterval(intervalRef.current);
 
-    if (pauseOnHover && container.current) {
-      const node = container.current;
-      const pause = () => {
-        tlRef.current?.pause();
-        clearInterval(intervalRef.current);
-      };
-      const resume = () => {
-        tlRef.current?.play();
-        intervalRef.current = window.setInterval(swap, delay);
-      };
+    const enter = () => {
+      entered = true;
+      refs.forEach((r, i) => {
+        if (!r.current) return;
+        const slot = makeSlot(i, cardDistance, verticalDistance, total);
+        gsap.to(r.current, {
+          opacity: 1,
+          y: slot.y,
+          duration: 0.9,
+          delay: i * 0.12,
+          ease: "power3.out",
+        });
+      });
+      window.setTimeout(startLoop, total * 120 + 400);
+    };
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          if (!entered) enter();
+          else startLoop();
+        } else {
+          stopLoop();
+          tlRef.current?.pause();
+        }
+      },
+      { threshold: 0.35 }
+    );
+    if (container.current) observer.observe(container.current);
+
+    const node = container.current;
+    const pause = () => {
+      tlRef.current?.pause();
+      stopLoop();
+    };
+    const resume = () => {
+      tlRef.current?.play();
+      startLoop();
+    };
+    if (pauseOnHover && node) {
       node.addEventListener("mouseenter", pause);
       node.addEventListener("mouseleave", resume);
-      return () => {
+    }
+    return () => {
+      observer.disconnect();
+      if (pauseOnHover && node) {
         node.removeEventListener("mouseenter", pause);
         node.removeEventListener("mouseleave", resume);
-        clearInterval(intervalRef.current);
-      };
-    }
-
-    return () => clearInterval(intervalRef.current);
+      }
+      clearInterval(intervalRef.current);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cardDistance, verticalDistance, delay, pauseOnHover, skewAmount, easing, refs]);
 
