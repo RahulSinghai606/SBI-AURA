@@ -16,6 +16,9 @@ import React, {
   useRef,
 } from "react";
 import gsap from "gsap";
+import { ScrollTrigger } from "gsap/ScrollTrigger";
+
+gsap.registerPlugin(ScrollTrigger);
 
 export interface CardSwapProps {
   width?: number | string;
@@ -117,8 +120,6 @@ export const CardSwap: React.FC<CardSwapProps> = ({
     refs.forEach((r, i) => {
       if (r.current) {
         placeNow(r.current, makeSlot(i, cardDistance, verticalDistance, total), skewAmount);
-        // hidden below their slot until the section scrolls into view
-        gsap.set(r.current, { opacity: 0, y: `+=140` });
       }
     });
 
@@ -183,51 +184,65 @@ export const CardSwap: React.FC<CardSwapProps> = ({
       });
     };
 
-    // Scroll-driven lifecycle: cards rise into their slots when the section
-    // enters the viewport, and auto-swapping runs only while visible.
-    let entered = false;
+    // Scroll-scrubbed entrance: as the section scrolls in, cards fly into the
+    // stack one after another; scrolling back up reverses them out again.
+    // The auto-swap loop only runs once the stack is fully assembled.
+    let assembled = false;
+    let startTimer = 0;
     const startLoop = () => {
       clearInterval(intervalRef.current);
       intervalRef.current = window.setInterval(swap, delay);
     };
-    const stopLoop = () => clearInterval(intervalRef.current);
-
-    const enter = () => {
-      entered = true;
-      refs.forEach((r, i) => {
-        if (!r.current) return;
-        const slot = makeSlot(i, cardDistance, verticalDistance, total);
-        gsap.to(r.current, {
-          opacity: 1,
-          y: slot.y,
-          duration: 0.9,
-          delay: i * 0.12,
-          ease: "power3.out",
-        });
-      });
-      window.setTimeout(startLoop, total * 120 + 400);
+    const stopLoop = () => {
+      clearInterval(intervalRef.current);
+      window.clearTimeout(startTimer);
     };
 
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) {
-          if (!entered) enter();
-          else startLoop();
-        } else {
-          stopLoop();
-          tlRef.current?.pause();
-        }
+    const entrance = gsap.timeline({
+      scrollTrigger: {
+        trigger: container.current,
+        start: "top 92%",
+        end: "top 28%",
+        scrub: 0.5,
+        onUpdate: (self) => {
+          if (self.progress >= 0.98) {
+            if (!assembled) {
+              assembled = true;
+              startTimer = window.setTimeout(startLoop, 700);
+            }
+          } else if (assembled) {
+            // scrolling back up: freeze the shuffle, hand control to the scrub
+            assembled = false;
+            stopLoop();
+            tlRef.current?.kill();
+            order.current = Array.from({ length: total }, (_, i) => i);
+            // restore canonical stacking for the reversed scrub
+            refs.forEach((r, i) => {
+              if (r.current) gsap.set(r.current, { zIndex: total - i, skewY: skewAmount, z: makeSlot(i, cardDistance, verticalDistance, total).z });
+            });
+          }
+        },
       },
-      { threshold: 0.35 }
-    );
-    if (container.current) observer.observe(container.current);
+    });
+
+    refs.forEach((r, i) => {
+      if (!r.current) return;
+      const slot = makeSlot(i, cardDistance, verticalDistance, total);
+      entrance.fromTo(
+        r.current,
+        { x: slot.x + 140, y: slot.y + 420, opacity: 0, rotate: 8 },
+        { x: slot.x, y: slot.y, opacity: 1, rotate: 0, duration: 1, ease: "power2.out" },
+        i * 0.45
+      );
+    });
 
     const node = container.current;
     const pause = () => {
       tlRef.current?.pause();
-      stopLoop();
+      clearInterval(intervalRef.current);
     };
     const resume = () => {
+      if (!assembled) return;
       tlRef.current?.play();
       startLoop();
     };
@@ -236,12 +251,13 @@ export const CardSwap: React.FC<CardSwapProps> = ({
       node.addEventListener("mouseleave", resume);
     }
     return () => {
-      observer.disconnect();
+      entrance.scrollTrigger?.kill();
+      entrance.kill();
       if (pauseOnHover && node) {
         node.removeEventListener("mouseenter", pause);
         node.removeEventListener("mouseleave", resume);
       }
-      clearInterval(intervalRef.current);
+      stopLoop();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cardDistance, verticalDistance, delay, pauseOnHover, skewAmount, easing, refs]);
