@@ -27,6 +27,13 @@ Respond with STRICT JSON only (no markdown fences) in this exact shape:
 }
 Use only the data given. Be concrete with numbers. Never invent PII.`;
 
+const LANG_NAME: Record<string, string> = {
+  en: "English",
+  hi: "Hindi (Devanagari script)",
+  gu: "Gujarati (Gujarati script)",
+  mr: "Marathi (Devanagari script)",
+};
+
 export async function POST(req: NextRequest) {
   const t0 = Date.now();
   const s = ops();
@@ -42,7 +49,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { customerId } = await req.json();
+  const { customerId, lang = "en" } = await req.json();
 
   // "live-*" twins are assembled at runtime from SBI core-banking APIs
   let customer = getCustomer(customerId);
@@ -100,6 +107,8 @@ Summary: ${customer.twinSummary}
 Goals: ${customer.goals.join("; ")}
 Live signals:\n${customer.signals.map((x) => `- [${x.type}/${x.strength}] ${x.label}: ${x.detail} (${x.time})`).join("\n")}
 Twin memory:\n${customer.memory.map((m) => `- (${m.kind}) ${m.text}`).join("\n")}
+
+IMPORTANT LANGUAGE RULE: The officer console language is ${LANG_NAME[lang] ?? "English"}. Write EVERY "finding" AND the "nba" fields (action, product, rationale, channel, timing, message) in ${LANG_NAME[lang] ?? "English"}. The "message" to the customer must also be in ${LANG_NAME[lang] ?? "English"}. Keep JSON keys in English.
 
 Run the 5-agent swarm and return the JSON.`;
 

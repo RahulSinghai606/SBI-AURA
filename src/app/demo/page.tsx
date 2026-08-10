@@ -172,7 +172,7 @@ export default function DemoPage() {
       const res = await fetch("/api/agents/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customerId: customer.id }),
+        body: JSON.stringify({ customerId: customer.id, lang }),
       });
       if (res.status === 423) {
         setPhase("idle");
