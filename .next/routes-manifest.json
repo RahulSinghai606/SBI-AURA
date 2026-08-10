@@ -131,6 +131,12 @@
       "namedRegex": "^/api/sbi/execute(?:/)?$"
     },
     {
+      "page": "/api/sbi/twin",
+      "regex": "^/api/sbi/twin(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/sbi/twin(?:/)?$"
+    },
+    {
       "page": "/api/tts",
       "regex": "^/api/tts(?:/)?$",
       "routeKeys": {},

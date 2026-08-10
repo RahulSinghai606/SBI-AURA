@@ -25,6 +25,9 @@
     "/api/sbi/execute": {
       "maxDuration": 30
     },
+    "/api/sbi/twin": {
+      "maxDuration": 30
+    },
     "/api/tts": {
       "maxDuration": 30
     }

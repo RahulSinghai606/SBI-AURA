@@ -10,6 +10,7 @@
   "/api/pii/route": "/api/pii",
   "/api/sbi/balance/route": "/api/sbi/balance",
   "/api/sbi/execute/route": "/api/sbi/execute",
+  "/api/sbi/twin/route": "/api/sbi/twin",
   "/api/tts/route": "/api/tts",
   "/demo/page": "/demo",
   "/favicon.ico/route": "/favicon.ico",
