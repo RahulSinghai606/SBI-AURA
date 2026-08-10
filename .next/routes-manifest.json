@@ -125,6 +125,12 @@
       "namedRegex": "^/api/sbi/balance(?:/)?$"
     },
     {
+      "page": "/api/sbi/execute",
+      "regex": "^/api/sbi/execute(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/sbi/execute(?:/)?$"
+    },
+    {
       "page": "/api/tts",
       "regex": "^/api/tts(?:/)?$",
       "routeKeys": {},

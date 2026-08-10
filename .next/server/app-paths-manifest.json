@@ -9,6 +9,7 @@
   "/api/ops/metrics/route": "app/api/ops/metrics/route.js",
   "/api/pii/route": "app/api/pii/route.js",
   "/api/sbi/balance/route": "app/api/sbi/balance/route.js",
+  "/api/sbi/execute/route": "app/api/sbi/execute/route.js",
   "/api/tts/route": "app/api/tts/route.js",
   "/demo/page": "app/demo/page.js",
   "/favicon.ico/route": "app/favicon.ico/route.js",
