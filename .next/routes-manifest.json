@@ -101,6 +101,12 @@
       "namedRegex": "^/api/health(?:/)?$"
     },
     {
+      "page": "/api/ops/actions",
+      "regex": "^/api/ops/actions(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/ops/actions(?:/)?$"
+    },
+    {
       "page": "/api/ops/kill",
       "regex": "^/api/ops/kill(?:/)?$",
       "routeKeys": {},
@@ -129,6 +135,12 @@
       "regex": "^/api/sbi/execute(?:/)?$",
       "routeKeys": {},
       "namedRegex": "^/api/sbi/execute(?:/)?$"
+    },
+    {
+      "page": "/api/sbi/roster",
+      "regex": "^/api/sbi/roster(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/sbi/roster(?:/)?$"
     },
     {
       "page": "/api/sbi/twin",

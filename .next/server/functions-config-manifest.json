@@ -16,6 +16,9 @@
     "/api/chat": {
       "maxDuration": 60
     },
+    "/api/ops/actions": {
+      "maxDuration": 30
+    },
     "/api/pii": {
       "maxDuration": 30
     },
@@ -23,6 +26,9 @@
       "maxDuration": 30
     },
     "/api/sbi/execute": {
+      "maxDuration": 30
+    },
+    "/api/sbi/roster": {
       "maxDuration": 30
     },
     "/api/sbi/twin": {
