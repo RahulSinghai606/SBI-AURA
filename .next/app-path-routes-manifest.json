@@ -13,6 +13,7 @@
   "/api/sbi/execute/route": "/api/sbi/execute",
   "/api/sbi/roster/route": "/api/sbi/roster",
   "/api/sbi/twin/route": "/api/sbi/twin",
+  "/api/translate/route": "/api/translate",
   "/api/tts/route": "/api/tts",
   "/demo/page": "/demo",
   "/favicon.ico/route": "/favicon.ico",

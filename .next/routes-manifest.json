@@ -149,6 +149,12 @@
       "namedRegex": "^/api/sbi/twin(?:/)?$"
     },
     {
+      "page": "/api/translate",
+      "regex": "^/api/translate(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/translate(?:/)?$"
+    },
+    {
       "page": "/api/tts",
       "regex": "^/api/tts(?:/)?$",
       "routeKeys": {},
