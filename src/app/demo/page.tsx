@@ -115,6 +115,25 @@ export default function DemoPage() {
   };
   const chatEndRef = useRef<HTMLDivElement>(null);
 
+  const [liveLoading, setLiveLoading] = useState(false);
+
+  // pull the LIVE twin — every field assembled from SBI core-banking APIs
+  const loadLiveTwin = async () => {
+    if (liveLoading) return;
+    setLiveLoading(true);
+    try {
+      const r = await fetch("/api/sbi/twin", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      if (r.status === 423) {
+        setKilled(true);
+        setLiveLoading(false);
+        return;
+      }
+      const d = await r.json();
+      if (d.customer) selectCustomer(d.customer as Customer);
+    } catch {}
+    setLiveLoading(false);
+  };
+
   const selectCustomer = (c: Customer) => {
     setCustomer(c);
     setPhase("idle");
@@ -319,6 +338,32 @@ export default function DemoPage() {
               </button>
             );
           })}
+          {/* LIVE twin — assembled at runtime from SBI core-banking APIs */}
+          <button
+            onClick={loadLiveTwin}
+            disabled={liveLoading}
+            className={`w-full text-left rounded-2xl p-4 transition-all border ${
+              customer.id === "live-sbi"
+                ? "bg-surface border-teal card-elevate -translate-y-0.5"
+                : "glass border-teal/40 hover:border-teal hover:bg-white"
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-full flex items-center justify-center font-display font-bold text-white shrink-0 bg-gradient-to-br from-teal to-cyan">
+                {liveLoading ? "…" : "SBI"}
+              </div>
+              <div className="min-w-0">
+                <p className="font-semibold text-navy truncate">{liveLoading ? "Pulling from SBI core…" : "Live SBI Customer"}</p>
+                <p className="text-xs text-ink-soft truncate">Twin built from real core-banking data</p>
+              </div>
+            </div>
+            <div className="mt-3 flex items-center gap-2">
+              <span className="inline-flex items-center gap-1 text-[10px] font-bold text-teal bg-teal/10 rounded-full px-2 py-0.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-teal animate-pulse" /> LIVE · api.innohub.sbi
+              </span>
+              <span className="text-[10px] text-ink-faint">3 core APIs</span>
+            </div>
+          </button>
           <div className="rounded-2xl border border-dashed border-line p-4 text-center">
             <p className="text-xs text-ink-faint leading-relaxed">+ 51,99,99,996 more Twins<br />in production rollout</p>
           </div>

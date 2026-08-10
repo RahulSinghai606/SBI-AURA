@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCustomer } from "@/lib/data";
 import { reason } from "@/lib/reasoning";
 import { ops, killGuard, recordLatency, logEvent } from "@/lib/ops";
+import { getLiveTwin } from "@/lib/sbi";
 
 export const maxDuration = 60;
 
@@ -26,7 +27,8 @@ export async function POST(req: NextRequest) {
     messages: { role: "customer" | "aura"; text: string }[];
     lang?: string;
   };
-  const customer = getCustomer(customerId);
+  let customer = getCustomer(customerId);
+  if (!customer && customerId === "live-sbi") customer = (await getLiveTwin()).customer;
   if (!customer) return NextResponse.json({ error: "unknown customer" }, { status: 404 });
 
   const langLine = lang && LANG_NAME[lang] ? `- The customer has switched the conversation language: reply in ${LANG_NAME[lang]}.` : "- Match the customer's preferred language and tone from context.";

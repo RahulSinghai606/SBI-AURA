@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCustomer, AgentStep, NextBestAction } from "@/lib/data";
 import { reason, extractJson } from "@/lib/reasoning";
 import { ops, killGuard, piiScan, recordLatency, recordTrace, logEvent, Span } from "@/lib/ops";
-import { getAccountBalance } from "@/lib/sbi";
+import { getAccountBalance, getLiveTwin } from "@/lib/sbi";
 
 export const maxDuration = 60;
 
@@ -43,8 +43,24 @@ export async function POST(req: NextRequest) {
   }
 
   const { customerId } = await req.json();
-  const customer = getCustomer(customerId);
+
+  // "live-sbi" twin is assembled at runtime from SBI core-banking APIs
+  let customer = getCustomer(customerId);
+  let liveTwinSpan: Span | null = null;
+  if (!customer && customerId === "live-sbi") {
+    const tw0 = Date.now();
+    const tw = await getLiveTwin();
+    customer = tw.customer;
+    liveTwinSpan = {
+      name: "sbi.live-twin · CustomerInfo + AccountEnquiry + Balance",
+      startMs: tw0 - t0,
+      durMs: Date.now() - tw0,
+      status: tw.provenance.every((p) => p.ok) ? "ok" : "error",
+      note: `${tw.provenance.filter((p) => p.ok).length}/3 core APIs · twin built from live data`,
+    };
+  }
   if (!customer) return NextResponse.json({ error: "unknown customer" }, { status: 404 });
+  if (liveTwinSpan) spans.push(liveTwinSpan);
 
   logEvent("swarm", `Swarm run started · twin ${customer.name.split(" ")[0]}·${customer.id}`, "info");
 
