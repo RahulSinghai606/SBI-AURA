@@ -117,6 +117,8 @@ export default function DemoPage() {
 
   const [liveLoading, setLiveLoading] = useState(true);
   const [liveRoster, setLiveRoster] = useState<Customer[]>([]);
+  type Insight = { state: string; engagementScore: number; opportunityScore: number; channel: string; daysSinceActivity: number | null };
+  const [insights, setInsights] = useState<Record<string, Insight>>({});
 
   // pull the LIVE roster on mount — every twin assembled from SBI core-banking APIs
   useEffect(() => {
@@ -127,7 +129,12 @@ export default function DemoPage() {
         if (r.ok) {
           const d = await r.json();
           const twins = (d.roster ?? []).map((t: { customer: Customer }) => t.customer);
+          const ins: Record<string, Insight> = {};
+          (d.roster ?? []).forEach((t: { customer: Customer; insight: Insight | null }) => {
+            if (t.insight) ins[t.customer.id] = t.insight;
+          });
           if (on && twins.length) {
+            setInsights(ins);
             setLiveRoster(twins);
             selectCustomer(twins[0]);
           }
@@ -354,10 +361,15 @@ export default function DemoPage() {
                     <p className="text-xs text-ink-soft truncate">{c.segment.replace("LIVE · ", "")}</p>
                   </div>
                 </div>
-                <div className="mt-3 flex items-center gap-2">
+                <div className="mt-3 flex items-center gap-2 flex-wrap">
                   <span className="inline-flex items-center gap-1 text-[10px] font-bold text-teal bg-teal/10 rounded-full px-2 py-0.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-teal animate-pulse" /> LIVE · api.innohub.sbi
+                    <span className="w-1.5 h-1.5 rounded-full bg-teal animate-pulse" /> LIVE
                   </span>
+                  {insights[c.id] && (
+                    <span className="text-[10px] font-bold text-cyan bg-cyan/10 rounded-full px-2 py-0.5">
+                      opp {insights[c.id].opportunityScore}
+                    </span>
+                  )}
                   <span className="text-[10px] text-ink-faint">{c.balance}</span>
                 </div>
               </button>
@@ -419,20 +431,46 @@ export default function DemoPage() {
               </div>
               <span className="text-[10px] font-bold tracking-[0.18em] uppercase bg-white/15 rounded-full px-3 py-1 shrink-0">Digital Twin</span>
             </div>
-            <div className="mt-4 grid grid-cols-3 gap-3 text-center">
-              <div className="rounded-xl bg-white/10 py-2">
-                <p className="font-display font-bold">{customer.balance}</p>
-                <p className="text-[10px] text-white/60 uppercase tracking-wide">Balance</p>
-              </div>
-              <div className="rounded-xl bg-white/10 py-2">
-                <p className="font-display font-bold">{customer.products.length}</p>
-                <p className="text-[10px] text-white/60 uppercase tracking-wide">Products</p>
-              </div>
-              <div className="rounded-xl bg-white/10 py-2">
-                <p className="font-display font-bold">{customer.language.split(" /")[0]}</p>
-                <p className="text-[10px] text-white/60 uppercase tracking-wide">Language</p>
-              </div>
-            </div>
+            {(() => {
+              const ins = insights[customer.id];
+              if (ins)
+                return (
+                  <div className="mt-4 grid grid-cols-4 gap-3 text-center">
+                    <div className="rounded-xl bg-white/10 py-2">
+                      <p className="font-display font-bold text-sm">{customer.balance}</p>
+                      <p className="text-[9px] text-white/60 uppercase tracking-wide">Balance</p>
+                    </div>
+                    <div className="rounded-xl bg-white/10 py-2">
+                      <p className="font-display font-bold">{ins.engagementScore}</p>
+                      <p className="text-[9px] text-white/60 uppercase tracking-wide">Engagement</p>
+                    </div>
+                    <div className="rounded-xl bg-white/10 py-2">
+                      <p className="font-display font-bold text-cyan">{ins.opportunityScore}</p>
+                      <p className="text-[9px] text-white/60 uppercase tracking-wide">Opportunity</p>
+                    </div>
+                    <div className="rounded-xl bg-white/10 py-2">
+                      <p className="font-display font-bold text-[13px] capitalize">{ins.state.replace("-", " ")}</p>
+                      <p className="text-[9px] text-white/60 uppercase tracking-wide">State</p>
+                    </div>
+                  </div>
+                );
+              return (
+                <div className="mt-4 grid grid-cols-3 gap-3 text-center">
+                  <div className="rounded-xl bg-white/10 py-2">
+                    <p className="font-display font-bold">{customer.balance}</p>
+                    <p className="text-[10px] text-white/60 uppercase tracking-wide">Balance</p>
+                  </div>
+                  <div className="rounded-xl bg-white/10 py-2">
+                    <p className="font-display font-bold">{customer.products.length}</p>
+                    <p className="text-[10px] text-white/60 uppercase tracking-wide">Products</p>
+                  </div>
+                  <div className="rounded-xl bg-white/10 py-2">
+                    <p className="font-display font-bold">{customer.language.split(" /")[0]}</p>
+                    <p className="text-[10px] text-white/60 uppercase tracking-wide">Language</p>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
 
           <div className="p-6 flex-1 flex flex-col min-h-0">

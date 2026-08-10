@@ -113,28 +113,131 @@ export function createDepositAccount() {
 
 import type { Customer } from "./data";
 
+type CoreTxn = {
+  TranCode: string;
+  TransactionAmount: string;
+  CurrentBalance: string;
+  TransactionDesc: string;
+  PostDate: string;
+  ValueDate?: string;
+  Branch: string;
+  Terminal?: string;
+  Type?: string;
+  ChequeNumber?: string;
+  JournalNumber: string;
+};
 type CoreEnquiry = {
   CustomerName: string;
   TotalBalanceClearedBalance: string;
   NumberOfTransactions: string;
   AccountNumber: string;
   Currency: string;
-  AccountDetails?: {
-    TranCode: string;
-    TransactionAmount: string;
-    CurrentBalance: string;
-    TransactionDesc: string;
-    PostDate: string;
-    Branch: string;
-    JournalNumber: string;
-  }[];
+  AccountDetails?: CoreTxn[];
 };
 
 export type LiveTwinResult = {
   customer: Customer;
   provenance: { source: string; ms: number; ok: boolean }[];
+  insight: TwinInsight | null;
   fetchedAt: number;
 };
+
+// ── Signal derivation: turn raw core fields into behavioural intelligence ──
+export type TwinInsight = {
+  balanceValue: number;
+  txnCount: number;
+  daysSinceActivity: number | null;
+  channel: string;
+  state: "active" | "idle-funds" | "dormant" | "churned";
+  engagementScore: number; // 0-100 relationship health
+  opportunityScore: number; // 0-100 next-best-action strength
+  derivedSignals: import("./data").Signal[];
+};
+
+// parse "dd/mm/yy" → days elapsed (SBI core posting date)
+function daysSince(postDate?: string): number | null {
+  if (!postDate) return null;
+  const m = postDate.split("/");
+  if (m.length !== 3) return null;
+  const yy = parseInt(m[2], 10);
+  const d = new Date(2000 + yy, parseInt(m[1], 10) - 1, parseInt(m[0], 10));
+  const diff = Math.floor((Date.now() - d.getTime()) / 86400000);
+  return diff >= 0 && diff < 20000 ? diff : null;
+}
+
+// map SBI core transaction/terminal codes to an engagement channel
+function channelOf(t?: CoreTxn): string {
+  if (!t) return "unknown";
+  const desc = (t.TransactionDesc || "").toUpperCase();
+  if (desc.includes("UPI")) return "UPI";
+  if (desc.includes("TRANSFER") || desc.includes("TFR") || desc.includes("NEFT") || desc.includes("IMPS")) return "digital transfer";
+  if (desc.includes("ATM")) return "ATM";
+  if (desc.includes("CHQ") || t.ChequeNumber) return "cheque / branch";
+  return "branch";
+}
+
+function num(s?: string): number {
+  return Math.abs(parseFloat((s || "0").replace(/[^0-9.]/g, "")) || 0);
+}
+
+// The core intelligence: derive behavioural signals + scores from live data.
+export function deriveInsight(e: CoreEnquiry): TwinInsight {
+  const last = e.AccountDetails?.[0];
+  const bal = num(e.TotalBalanceClearedBalance);
+  const txns = parseInt(e.NumberOfTransactions || "0", 10);
+  const days = daysSince(last?.PostDate);
+  const channel = channelOf(last);
+  const closed = (last?.TransactionDesc || "").toUpperCase().includes("CLOSE");
+
+  const state: TwinInsight["state"] = closed || bal === 0 ? "churned" : days !== null && days > 180 ? "dormant" : bal > 5000 ? "idle-funds" : "active";
+
+  // engagement health: recent activity + balance + transaction count
+  const recencyScore = days === null ? 40 : days < 30 ? 100 : days < 90 ? 75 : days < 180 ? 50 : days < 365 ? 25 : 8;
+  const balScore = bal === 0 ? 0 : bal > 100000 ? 100 : bal > 10000 ? 70 : 40;
+  const activityScore = Math.min(100, txns * 8);
+  const engagementScore = Math.round(recencyScore * 0.5 + balScore * 0.3 + activityScore * 0.2);
+
+  // opportunity: high when idle funds sit unused, or churned (win-back)
+  const opportunityScore = state === "idle-funds" ? Math.min(100, 55 + Math.round(bal / 5000)) : state === "churned" ? 82 : state === "dormant" ? 74 : 45;
+
+  const sig: import("./data").Signal[] = [];
+  if (last)
+    sig.push({
+      id: "d-last",
+      type: "transaction",
+      label: `${last.TransactionDesc || "Movement"} · ₹${last.TransactionAmount.trim()}`,
+      detail: `Posted ${last.PostDate}${last.ValueDate ? ` (value ${last.ValueDate})` : ""} · branch ${last.Branch} · journal ${last.JournalNumber} — live from SBI core`,
+      time: last.PostDate,
+      strength: "high",
+    });
+  if (days !== null)
+    sig.push({
+      id: "d-recency",
+      type: days > 180 ? "life-event" : "app",
+      label: days > 180 ? `Dormant ${days} days` : `Last active ${days} days ago`,
+      detail: `${days} days since the last posting — ${days > 365 ? "long-dormant relationship, re-engagement priority" : days > 180 ? "cooling relationship, act before attrition" : "active relationship"} (inferred from core posting date)`,
+      time: "computed",
+      strength: days > 180 ? "high" : "medium",
+    });
+  sig.push({
+    id: "d-channel",
+    type: "transaction",
+    label: `Preferred channel: ${channel}`,
+    detail: `Last movement routed via ${channel} (tran-code ${last?.TranCode ?? "—"}${last?.Terminal ? `, terminal ${last.Terminal}` : ""}) — steer outreach to the channel the customer already uses`,
+    time: "computed",
+    strength: "medium",
+  });
+  sig.push({
+    id: "d-balance",
+    type: "transaction",
+    label: state === "idle-funds" ? `Idle cleared funds ₹${e.TotalBalanceClearedBalance.trim()}` : `Balance ₹${e.TotalBalanceClearedBalance.trim()}`,
+    detail: `${txns} transactions on record · state classified as "${state}" · engagement health ${engagementScore}/100 · opportunity ${opportunityScore}/100 (derived from live balance, recency and activity)`,
+    time: "now",
+    strength: state === "idle-funds" || state === "churned" ? "high" : "medium",
+  });
+
+  return { balanceValue: bal, txnCount: txns, daysSinceActivity: days, channel, state, engagementScore, opportunityScore, derivedSignals: sig };
+}
 
 // Three REAL relationships exposed by the InnoHub sandbox — each is a distinct
 // engagement use case. This is the production data path: point ROSTER at the
@@ -209,7 +312,9 @@ export async function buildLiveTwin(account: string, kind: "saver" | "winback" |
         { id: "c2", type: "transaction", label: "Hold ₹0 · unclear ₹0", detail: "Entire balance deployable — no lien, no float risk — live from Account Balance API", time: "now", strength: "medium" },
       ];
     c.personaPrompt = `Corporate treasury client, available float ₹${bal} on the current account (live from SBI core). Considering auto-sweep into overnight deposits.`;
-    return { customer: c, provenance: [{ source: "Account Balance", ms: corp.ms, ok: corp.ok }], fetchedAt: Date.now() };
+    const cVal = corp.ok ? num(corp.data.data.availBalance) : 0;
+    const cInsight: TwinInsight = { balanceValue: cVal, txnCount: 0, daysSinceActivity: null, channel: "corporate portal", state: "idle-funds", engagementScore: 70, opportunityScore: Math.min(100, 60 + Math.round(cVal / 200000)), derivedSignals: c.signals };
+    return { customer: c, insight: cInsight, provenance: [{ source: "Account Balance", ms: corp.ms, ok: corp.ok }], fetchedAt: Date.now() };
   }
 
   const [info, stmt] = await Promise.all([
@@ -222,29 +327,26 @@ export async function buildLiveTwin(account: string, kind: "saver" | "winback" |
   const txns = info.ok ? parseInt(info.data.NumberOfTransactions || "0", 10) : 0;
   const last = info.ok ? info.data.AccountDetails?.[0] : undefined;
 
+  // ── derive behavioural signals + scores from the live data ──
+  const insight = info.ok ? deriveInsight(info.data) : null;
+
   const c = twinShell(`live-${account}`, name, kind === "saver" ? "LIVE · Retail — Active Saver" : "LIVE · Retail — Win-back", `₹${bal}`, kind === "saver" ? 265 : 20);
-  if (info.ok) {
-    c.signals = (info.data.AccountDetails ?? []).slice(0, 3).map((t, i) => ({
-      id: `t${i}`,
-      type: "transaction" as const,
-      label: `${t.TransactionDesc || "Core txn"} · ₹${t.TransactionAmount.trim()}`,
-      detail: `Posted ${t.PostDate} · branch ${t.Branch} · journal ${t.JournalNumber} · running balance ₹${t.CurrentBalance.trim()} — live from ${kind === "saver" ? "Customer Information Enquiry" : "Account Enquiry"} API`,
-      time: t.PostDate,
-      strength: "high" as const,
-    }));
-    c.signals.push({ id: "bal", type: "transaction", label: `Cleared balance ₹${bal}`, detail: `${txns} transactions on record for a/c ending ${account.slice(-4)} — live from SBI core`, time: "now", strength: "high" });
-  }
+  if (insight) c.signals = insight.derivedSignals;
+
+  const scoreLine = insight ? ` Engagement health ${insight.engagementScore}/100, opportunity ${insight.opportunityScore}/100, preferred channel ${insight.channel}${insight.daysSinceActivity !== null ? `, ${insight.daysSinceActivity} days since last activity` : ""}.` : "";
+
   if (kind === "saver") {
-    c.twinSummary = `Twin assembled from SBI core APIs — no synthetic data. ${name}: cleared balance ₹${bal}, ${txns} transactions; latest movement "${last?.TransactionDesc ?? ""}" on ${last?.PostDate ?? ""}. Idle cleared balance with no deposit product attached — sweep-to-deposit opportunity.`;
+    c.twinSummary = `Twin assembled from SBI core APIs — no synthetic data. ${name}: cleared balance ₹${bal}, ${txns} transactions; latest movement "${last?.TransactionDesc ?? ""}" on ${last?.PostDate ?? ""}.${scoreLine} State: ${insight?.state ?? "active"} — idle cleared balance with no deposit product attached, a sweep-to-deposit opportunity.`;
     c.goals = ["Put idle balance to work", "Consolidate linked accounts"];
-    c.personaPrompt = `Customer: ${name}, retail SBI customer, cleared balance ₹${bal}, ${txns} transactions (live from SBI core). Latest: credit by transfer. Good fit for a term/sweep deposit on the idle balance.`;
+    c.personaPrompt = `Customer: ${name}, retail SBI customer, cleared balance ₹${bal}, ${txns} transactions (live from SBI core).${scoreLine} Idle-funds state — good fit for a term/sweep deposit. Reach on the preferred channel (${insight?.channel ?? "digital"}).`;
   } else {
-    c.twinSummary = `Twin assembled from SBI core APIs — no synthetic data. ${name}: balance ₹${bal}, ${txns} transactions; latest movement "${last?.TransactionDesc ?? ""}" (${last?.PostDate ?? ""}) — the account was emptied to closure. Dormant/churned relationship: a respectful win-back journey, not a product push.`;
+    c.twinSummary = `Twin assembled from SBI core APIs — no synthetic data. ${name}: balance ₹${bal}, ${txns} transactions; latest movement "${last?.TransactionDesc ?? ""}" (${last?.PostDate ?? ""}) — account emptied to closure.${scoreLine} State: ${insight?.state ?? "churned"} — a respectful win-back journey, not a product push.`;
     c.goals = ["Understand why the customer left", "Rebuild the relationship"];
-    c.personaPrompt = `Customer: ${name}, retail SBI customer whose account shows "${last?.TransactionDesc ?? "closure transfer"}" and a ₹${bal} balance (live from SBI core). Churned/dormant — the right move is an empathetic win-back conversation, never a hard sell.`;
+    c.personaPrompt = `Customer: ${name}, retail SBI customer whose account shows "${last?.TransactionDesc ?? "closure transfer"}", ₹${bal} balance (live from SBI core).${scoreLine} Churned/dormant — the right move is an empathetic win-back conversation, never a hard sell.`;
   }
   return {
     customer: c,
+    insight,
     provenance: [
       { source: kind === "saver" ? "Customer Information Enquiry" : "Account Enquiry", ms: info.ms, ok: info.ok },
       ...(kind === "saver" ? [{ source: "Account Statement Enquiry", ms: stmt.ms, ok: stmt.ok }] : []),
