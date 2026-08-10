@@ -8,13 +8,14 @@ export const maxDuration = 60;
 
 type SwarmResult = { steps: AgentStep[]; nba: NextBestAction; live: boolean };
 
-const SYSTEM = `You are the multi-agent Reasoning Engine of SBI AURA — an agentic customer-engagement platform for State Bank of India built by Kellton.
+const buildSystem = (langName: string) => `You are the multi-agent Reasoning Engine of SBI AURA — an agentic customer-engagement platform for State Bank of India built by Kellton.
+OUTPUT LANGUAGE (non-negotiable): ${langName}. Every "finding", and every nba field (action, product, rationale, channel, timing, message) MUST be written in ${langName}. If ${langName} is not English, do NOT write those values in English — translate everything, keeping numbers, ₹ amounts, dates and product names (e.g. "SBI Savings Plus") as-is. JSON keys stay in English.
 You simulate a swarm of five agents analysing one customer's Digital Twin:
 1. Sensor Agent — correlates raw signals
 2. Life-Event Agent — infers the life/business event & urgency window
 3. Risk & Compliance Agent — RBI/DPDP guardrails, suitability, consent
 4. Offer Agent — picks ONE next-best-action from realistic SBI products
-5. Conversation Agent — drafts the outreach in the customer's preferred language/channel/tone per Twin memory
+5. Conversation Agent — drafts the outreach in the OUTPUT LANGUAGE above, on the customer's preferred channel/tone per Twin memory
 
 Respond with STRICT JSON only (no markdown fences) in this exact shape:
 {
@@ -22,7 +23,7 @@ Respond with STRICT JSON only (no markdown fences) in this exact shape:
  "nba": {
    "action": string, "product": string, "rationale": string, "channel": string, "timing": string, "language": string,
    "compliance": [{"rule": string, "status": "pass"|"review"}] (exactly 4),
-   "message": string (the actual customer message, in their preferred language, warm + specific, under 90 words, signed "— AURA, your SBI assistant")
+   "message": string (the actual customer message, in the OUTPUT LANGUAGE, warm + specific, under 90 words, signed "— AURA, your SBI assistant")
  }
 }
 Use only the data given. Be concrete with numbers. Never invent PII.`;
@@ -108,13 +109,11 @@ Goals: ${customer.goals.join("; ")}
 Live signals:\n${customer.signals.map((x) => `- [${x.type}/${x.strength}] ${x.label}: ${x.detail} (${x.time})`).join("\n")}
 Twin memory:\n${customer.memory.map((m) => `- (${m.kind}) ${m.text}`).join("\n")}
 
-IMPORTANT LANGUAGE RULE: The officer console language is ${LANG_NAME[lang] ?? "English"}. Write EVERY "finding" AND the "nba" fields (action, product, rationale, channel, timing, message) in ${LANG_NAME[lang] ?? "English"}. The "message" to the customer must also be in ${LANG_NAME[lang] ?? "English"}. Keep JSON keys in English.
-
-Run the 5-agent swarm and return the JSON.`;
+Run the 5-agent swarm and return the JSON — remember: all findings and nba values in ${LANG_NAME[lang] ?? "English"}.`;
 
   // ── swarm reasoning span ──
   sT = Date.now();
-  const raw = await reason({ system: SYSTEM, user, maxTokens: 2000 });
+  const raw = await reason({ system: buildSystem(LANG_NAME[lang] ?? "English"), user, maxTokens: 2000 });
   s.counters.llmCalls++;
   if (raw) s.counters.llmTokensOut += Math.round(raw.length / 4);
   spans.push({
