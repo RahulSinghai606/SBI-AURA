@@ -1,0 +1,18 @@
+{
+  "/_global-error/page": "/_global-error",
+  "/_not-found/page": "/_not-found",
+  "/api/agents/run/route": "/api/agents/run",
+  "/api/chat/route": "/api/chat",
+  "/api/gate/route": "/api/gate",
+  "/api/health/route": "/api/health",
+  "/api/ops/kill/route": "/api/ops/kill",
+  "/api/ops/metrics/route": "/api/ops/metrics",
+  "/api/pii/route": "/api/pii",
+  "/api/sbi/balance/route": "/api/sbi/balance",
+  "/api/tts/route": "/api/tts",
+  "/demo/page": "/demo",
+  "/favicon.ico/route": "/favicon.ico",
+  "/gate/page": "/gate",
+  "/ops/page": "/ops",
+  "/page": "/"
+}
