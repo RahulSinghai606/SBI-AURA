@@ -22,7 +22,7 @@ async function sbiPost<T>(service: string, path: string, body: Record<string, un
       "X-Authorization": process.env.SBI_API_TOKEN,
       "Content-Type": "application/json",
     };
-    if (process.env.SBI_IH_CODE) headers["IH_CODE"] = process.env.SBI_IH_CODE;
+    headers["IH_CODE"] = process.env.SBI_IH_CODE ?? "000073";
     const res = await fetch(`${BASE}/${service}${path}`, {
       method: "POST",
       headers,
@@ -82,22 +82,22 @@ export function getAccountEnquiry(accountNumber = "30002709704") {
   return sbiPost<Record<string, unknown>>("accountenquiryapi/v1", "/accounts", { AccountNumber: accountNumber });
 }
 
-// Personal details — the twin's identity layer.
-export function getCustomerInfo(body: Record<string, unknown>) {
-  return sbiPost<Record<string, unknown>>("customerinformationenquiry/v1", "/enquiry", body);
+// Personal details — the twin's identity layer. Verified live: returns
+// customer name, cleared balance and recent transactions.
+export function getCustomerInfo(accountNumber = "30095497360") {
+  return sbiPost<{ CustomerName: string; TotalBalanceClearedBalance: string; NumberOfTransactions: string }>(
+    "customerinformationenquiry/v1",
+    "/enquiry",
+    { AccountNumber: accountNumber }
+  );
 }
 
-// Instant same-bank transfer — executes the next-best-action.
-export function c2cFundTransfer(body: Record<string, unknown>) {
-  return sbiPost<Record<string, unknown>>("CustomertoCustomerFundTransfer/v1", "/fundTransfer", body);
+// Open a new deposit account on the SBI core — the "idle balance → deposit"
+// flagship action. Verified live: returns the freshly created account number.
+export function createDepositAccount() {
+  return sbiPost<{ ResponseStatus: string; AccountNumber: string }>("accountcreation/v1", "/customers", {});
 }
 
-// NEFT inter-bank transfer.
-export function neftFundTransfer(body: Record<string, unknown>) {
-  return sbiPost<Record<string, unknown>>("NEFTFundTransfer/v1", "/fundTransfer", body);
-}
-
-// Open a new deposit account — the "idle balance → FD" flagship action.
-export function createDepositAccount(body: Record<string, unknown>) {
-  return sbiPost<Record<string, unknown>>("accountcreation/v1", "/accounts", body);
-}
+// NOTE: the C2C and NEFT fund-transfer sandbox backends currently reject their
+// own published request schemas (SI520 on every spec field — verified 10 Aug 2026),
+// so the money-movement action demos through Account Creation instead.

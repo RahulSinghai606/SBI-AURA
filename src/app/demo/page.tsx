@@ -123,6 +123,7 @@ export default function DemoPage() {
     setNba(null);
     setChatOpen(false);
     setMessages([]);
+    setExecResult(null);
     setTab("signals");
   };
 
@@ -133,6 +134,7 @@ export default function DemoPage() {
     setNba(null);
     setChatOpen(false);
     setMessages([]);
+    setExecResult(null);
     try {
       const res = await fetch("/api/agents/run", {
         method: "POST",
@@ -166,6 +168,26 @@ export default function DemoPage() {
     const t = setTimeout(() => setVisibleSteps((v) => v + 1), 850);
     return () => clearTimeout(t);
   }, [phase, visibleSteps, steps.length]);
+
+  const [execBusy, setExecBusy] = useState(false);
+  const [execResult, setExecResult] = useState<string | null>(null);
+
+  // execute the approved NBA for real on the SBI core (Account Creation API)
+  const executeNba = async () => {
+    if (execBusy || execResult) return;
+    setExecBusy(true);
+    try {
+      const r = await fetch("/api/sbi/execute", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      if (r.status === 423) {
+        setKilled(true);
+        setExecBusy(false);
+        return;
+      }
+      const d = await r.json();
+      if (d.live && d.accountNumber) setExecResult(d.accountNumber);
+    } catch {}
+    setExecBusy(false);
+  };
 
   const openChat = () => {
     setChatOpen(true);
@@ -539,6 +561,24 @@ export default function DemoPage() {
                             <MessageCircle className="w-4.5 h-4.5 w-[18px] h-[18px]" />
                             Deliver via {nba.channel.split(" ")[0]} — open conversation
                           </button>
+                          <button
+                            onClick={executeNba}
+                            disabled={execBusy || Boolean(execResult)}
+                            className={`w-full inline-flex items-center justify-center gap-2 rounded-xl font-semibold py-3.5 transition-all card-elevate disabled:cursor-not-allowed ${
+                              execResult ? "bg-teal/10 text-teal border border-teal/40" : "bg-navy text-white hover:bg-sbi disabled:opacity-70"
+                            }`}
+                          >
+                            {execResult
+                              ? `✓ OPENED on SBI core · a/c ${execResult}`
+                              : execBusy
+                                ? "Calling SBI Account Creation API…"
+                                : "Execute on SBI core — open deposit account (live)"}
+                          </button>
+                          {execResult && (
+                            <p className="text-[10px] text-ink-faint text-center">
+                              Real account number returned by api.innohub.sbi · action recorded on the ops audit stream
+                            </p>
+                          )}
                         </div>
                       </motion.div>
                     )}
