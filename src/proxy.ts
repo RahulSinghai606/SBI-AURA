@@ -15,6 +15,10 @@ function noIndex(res: NextResponse) {
 export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
+  // gate only enforced when a password is configured (private Vercel hosting);
+  // the SBI InnoHub sandbox runs open for judges
+  if (!process.env.SITE_PASSWORD) return noIndex(NextResponse.next());
+
   if (OPEN_PREFIXES.some((p) => pathname.startsWith(p)) || OPEN_FILES.test(pathname)) {
     return noIndex(NextResponse.next());
   }

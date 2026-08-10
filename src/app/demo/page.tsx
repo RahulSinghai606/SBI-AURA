@@ -67,6 +67,52 @@ export default function DemoPage() {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [draft, setDraft] = useState("");
   const [typing, setTyping] = useState(false);
+  const [lang, setLang] = useState<"en" | "hi" | "gu" | "mr">("en");
+  const [killed, setKilled] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+
+  // live kill-switch awareness — polled from the ops core
+  useEffect(() => {
+    let on = true;
+    const pollKill = async () => {
+      try {
+        const r = await fetch("/api/ops/kill", { cache: "no-store" });
+        const d = await r.json();
+        if (on) setKilled(Boolean(d.engaged));
+      } catch {}
+    };
+    pollKill();
+    const t = setInterval(pollKill, 3000);
+    return () => {
+      on = false;
+      clearInterval(t);
+    };
+  }, []);
+
+  // Azure Neural TTS — reads AURA's latest message aloud in the selected language
+  const speak = async (text: string) => {
+    if (!text || speaking) return;
+    setSpeaking(true);
+    try {
+      const r = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, lang }),
+      });
+      if (r.ok) {
+        const url = URL.createObjectURL(await r.blob());
+        const audio = new Audio(url);
+        audio.onended = () => {
+          setSpeaking(false);
+          URL.revokeObjectURL(url);
+        };
+        audio.onerror = () => setSpeaking(false);
+        await audio.play();
+        return;
+      }
+    } catch {}
+    setSpeaking(false);
+  };
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   const selectCustomer = (c: Customer) => {
@@ -93,6 +139,11 @@ export default function DemoPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ customerId: customer.id }),
       });
+      if (res.status === 423) {
+        setPhase("idle");
+        setKilled(true);
+        return;
+      }
       const data = await res.json();
       setSteps(data.steps);
       setNba(data.nba);
@@ -132,8 +183,14 @@ export default function DemoPage() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customerId: customer.id, messages: next }),
+        body: JSON.stringify({ customerId: customer.id, messages: next, lang }),
       });
+      if (res.status === 423) {
+        setKilled(true);
+        setMessages((m) => [...m, { role: "aura", text: "Engagement is paused by the bank right now — a human officer will pick this up shortly." }]);
+        setTyping(false);
+        return;
+      }
       const data = await res.json();
       setMessages((m) => [...m, { role: "aura", text: data.reply }]);
     } catch {
@@ -162,15 +219,50 @@ export default function DemoPage() {
             </span>
           </div>
           <div className="flex items-center gap-3">
-            <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wide text-teal bg-teal/10 rounded-full px-3 py-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-teal animate-pulse" />
-              REASONING ENGINE ONLINE
-            </span>
-            <span className="text-[11px] text-ink-faint hidden md:block">synthetic data · demo environment</span>
+            <div className="flex gap-0.5 rounded-lg bg-bg border border-line p-0.5" aria-label="Conversation language">
+              {(["en", "hi", "gu", "mr"] as const).map((l) => (
+                <button
+                  key={l}
+                  onClick={() => setLang(l)}
+                  className={`px-2 py-1 rounded-md text-[10px] font-bold tracking-wide transition-colors ${
+                    lang === l ? "bg-sbi text-white" : "text-ink-faint hover:text-navy"
+                  }`}
+                >
+                  {l === "en" ? "EN" : l === "hi" ? "हिं" : l === "gu" ? "ગુ" : "मरा"}
+                </button>
+              ))}
+            </div>
+            <Link
+              href="/ops"
+              className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold text-navy border border-line rounded-full px-3 py-1 hover:border-cyan hover:text-sbi transition-colors"
+            >
+              Ops Console
+            </Link>
+            {killed ? (
+              <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wide text-red-600 bg-red-500/10 rounded-full px-3 py-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                ENGAGEMENT SUSPENDED
+              </span>
+            ) : (
+              <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wide text-teal bg-teal/10 rounded-full px-3 py-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-teal animate-pulse" />
+                REASONING ENGINE ONLINE
+              </span>
+            )}
             <Image src="/sbi-logo.webp" alt="SBI" width={26} height={26} className="h-6 w-auto" />
           </div>
         </div>
       </header>
+
+      {/* platform-wide kill banner */}
+      {killed && (
+        <div className="bg-red-600 text-white text-[12px] font-semibold py-2 px-4 flex items-center justify-center gap-2 flex-wrap">
+          KILL SWITCH ENGAGED — all agentic engagement is suspended platform-wide. No customer is contacted while the switch is on.
+          <Link href="/ops" className="underline underline-offset-2 font-bold">
+            Release from the Ops Console →
+          </Link>
+        </div>
+      )}
 
       <div className="mx-auto max-w-[1500px] px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-[300px_1fr_1.1fr] gap-5">
         {/* ── LEFT: customer roster ── */}
@@ -309,10 +401,14 @@ export default function DemoPage() {
 
             <button
               onClick={runSwarm}
-              disabled={phase === "running" || phase === "revealing"}
-              className="mt-5 group w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-sbi text-white font-semibold py-4 card-elevate hover:bg-navy transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+              disabled={phase === "running" || phase === "revealing" || killed}
+              className={`mt-5 group w-full inline-flex items-center justify-center gap-2 rounded-2xl font-semibold py-4 card-elevate transition-all disabled:cursor-not-allowed ${
+                killed ? "bg-red-500/15 text-red-600 border border-red-400/50" : "bg-sbi text-white hover:bg-navy disabled:opacity-60"
+              }`}
             >
-              {phase === "idle" || phase === "done" ? (
+              {killed ? (
+                <>Engagement suspended — kill switch engaged</>
+              ) : phase === "idle" || phase === "done" ? (
                 <>
                   {phase === "done" ? <RotateCcw className="w-5 h-5" /> : <Play className="w-5 h-5" />}
                   {phase === "done" ? "Re-run agent swarm" : "Run AURA agent swarm"}
@@ -482,7 +578,19 @@ export default function DemoPage() {
                           >
                             {m.text}
                             {m.role === "aura" && (
-                              <span className="block text-right mt-1 text-[9px] text-ink-faint">AURA · compliant · human-override on</span>
+                              <span className="flex items-center justify-between gap-2 mt-1">
+                                <button
+                                  onClick={() => speak(m.text)}
+                                  disabled={speaking}
+                                  className={`inline-flex items-center gap-1 text-[9px] font-bold rounded-full px-2 py-0.5 transition-colors ${
+                                    speaking ? "bg-cyan/15 text-cyan animate-pulse" : "bg-sbi/8 text-sbi hover:bg-sbi hover:text-white"
+                                  }`}
+                                  aria-label="Listen"
+                                >
+                                  🔊 {speaking ? "Speaking…" : "Listen"}
+                                </button>
+                                <span className="text-[9px] text-ink-faint">AURA · compliant · human-override on</span>
+                              </span>
                             )}
                           </div>
                         </motion.div>
