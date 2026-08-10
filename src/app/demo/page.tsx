@@ -70,6 +70,74 @@ export default function DemoPage() {
   const [lang, setLang] = useState<"en" | "hi" | "gu" | "mr">("en");
   const [killed, setKilled] = useState(false);
   const [speaking, setSpeaking] = useState(false);
+  const [translating, setTranslating] = useState(false);
+  // remembers each live text node's true English original across re-renders
+  const enMap = useRef<WeakMap<Text, string>>(new WeakMap());
+
+  // ── Whole-page instant translation via Azure Translator ──
+  // Walk every visible text node, batch-translate, swap in place. React always
+  // re-renders the English source, so any freshly-rendered node is captured as
+  // English; nodes we already translated are remembered in enMap.
+  const translatePage = async (to: "en" | "hi" | "gu" | "mr") => {
+    const root = document.querySelector("main");
+    if (!root) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) => {
+        const t = (n.nodeValue ?? "").trim();
+        if (!t || t.length < 2) return NodeFilter.FILTER_REJECT;
+        if (/^[\d\s₹.,:%/•·—–\-()]+$/.test(t)) return NodeFilter.FILTER_REJECT;
+        const p = n.parentElement;
+        if (p && (p.tagName === "SCRIPT" || p.tagName === "STYLE" || p.closest("[data-noi18n]"))) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    const nodes: Text[] = [];
+    let cur: Node | null;
+    while ((cur = walker.nextNode())) {
+      const node = cur as Text;
+      // if not seen, the current value IS the English source React rendered
+      if (!enMap.current.has(node)) enMap.current.set(node, node.nodeValue ?? "");
+      nodes.push(node);
+    }
+
+    if (to === "en") {
+      nodes.forEach((n) => (n.nodeValue = enMap.current.get(n) ?? n.nodeValue));
+      return;
+    }
+
+    setTranslating(true);
+    try {
+      const uniq = Array.from(new Set(nodes.map((n) => (enMap.current.get(n) ?? "").trim()).filter(Boolean)));
+      const res = await fetch("/api/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ texts: uniq, to }),
+      });
+      const { translations } = await res.json();
+      const map = new Map<string, string>();
+      uniq.forEach((sTxt, i) => map.set(sTxt, translations[i] ?? sTxt));
+      nodes.forEach((n) => {
+        const en = (enMap.current.get(n) ?? "").trim();
+        const tr = map.get(en);
+        if (tr && en) n.nodeValue = (enMap.current.get(n) ?? "").replace(en, tr);
+      });
+    } catch {}
+    setTranslating(false);
+  };
+
+  // switch language: set state, then translate the whole page instantly
+  const switchLang = (l: "en" | "hi" | "gu" | "mr") => {
+    setLang(l);
+    setTimeout(() => translatePage(l), 60);
+  };
+
+  // re-translate whenever new dynamic content renders (swarm output, chat, customer)
+  useEffect(() => {
+    if (lang === "en") return;
+    const t = setTimeout(() => translatePage(lang), 150);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [steps, nba, messages, customer]);
 
   // live kill-switch awareness — polled from the ops core
   useEffect(() => {
@@ -283,11 +351,14 @@ export default function DemoPage() {
             </span>
           </div>
           <div className="flex items-center gap-3">
-            <div className="flex gap-0.5 rounded-lg bg-bg border border-line p-0.5" aria-label="Conversation language">
+            {translating && (
+              <span data-noi18n className="text-[10px] font-semibold text-cyan animate-pulse">translating…</span>
+            )}
+            <div data-noi18n className="flex gap-0.5 rounded-lg bg-bg border border-line p-0.5" aria-label="Conversation language">
               {(["en", "hi", "gu", "mr"] as const).map((l) => (
                 <button
                   key={l}
-                  onClick={() => setLang(l)}
+                  onClick={() => switchLang(l)}
                   className={`px-2 py-1 rounded-md text-[10px] font-bold tracking-wide transition-colors ${
                     lang === l ? "bg-sbi text-white" : "text-ink-faint hover:text-navy"
                   }`}
