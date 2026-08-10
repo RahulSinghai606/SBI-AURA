@@ -111,17 +111,28 @@ Twin memory:\n${customer.memory.map((m) => `- (${m.kind}) ${m.text}`).join("\n")
 
 Run the 5-agent swarm and return the JSON — remember: all findings and nba values in ${LANG_NAME[lang] ?? "English"}.`;
 
-  // ── swarm reasoning span ──
+  // ── swarm reasoning span (one retry on parse-fail so vernacular never
+  //    silently drops to the English fallback) ──
   sT = Date.now();
-  const raw = await reason({ system: buildSystem(LANG_NAME[lang] ?? "English"), user, maxTokens: 2000 });
-  s.counters.llmCalls++;
-  if (raw) s.counters.llmTokensOut += Math.round(raw.length / 4);
+  const sys = buildSystem(LANG_NAME[lang] ?? "English");
+  let parsed: Omit<SwarmResult, "live"> | null = null;
+  let attempts = 0;
+  for (let i = 0; i < 2 && !parsed; i++) {
+    attempts++;
+    const raw = await reason({ system: sys, user, maxTokens: 2000 });
+    s.counters.llmCalls++;
+    if (raw) {
+      s.counters.llmTokensOut += Math.round(raw.length / 4);
+      const p = extractJson<Omit<SwarmResult, "live">>(raw);
+      if (p?.steps?.length && p?.nba?.message) parsed = p;
+    }
+  }
   spans.push({
     name: "swarm.reason · Sensor→LifeEvent→Compliance→Offer→Conversation",
     startMs: sT - t0,
     durMs: Date.now() - sT,
-    status: raw ? "ok" : "error",
-    note: raw ? "5 agents · batched inference" : "LLM unavailable → cached twin",
+    status: parsed ? "ok" : "error",
+    note: parsed ? `5 agents · batched inference${attempts > 1 ? ` · ${attempts} attempts` : ""}` : "LLM unavailable → cached twin",
   });
 
   const totalMs = Date.now() - t0;
@@ -129,11 +140,8 @@ Run the 5-agent swarm and return the JSON — remember: all findings and nba val
   recordTrace({ id: traceId, route: `swarm.run · ${customer.id}`, startedAt: t0, totalMs, spans });
   logEvent("swarm", `Swarm finished in ${(totalMs / 1000).toFixed(1)}s · trace ${traceId}`, "info");
 
-  if (raw) {
-    const parsed = extractJson<Omit<SwarmResult, "live">>(raw);
-    if (parsed?.steps?.length && parsed?.nba?.message) {
-      return NextResponse.json({ ...parsed, live: true, traceId, sbi: bal.ok ? { balance: bal.data.data.availBalance.trim(), ms: bal.ms } : null, pii: { redacted: pii.entities.length } });
-    }
+  if (parsed) {
+    return NextResponse.json({ ...parsed, live: true, traceId, sbi: bal.ok ? { balance: bal.data.data.availBalance.trim(), ms: bal.ms } : null, pii: { redacted: pii.entities.length } });
   }
   // Resilient fallback so the demo never stalls
   return NextResponse.json({ steps: customer.fallback.steps, nba: customer.fallback.nba, live: false, traceId });
