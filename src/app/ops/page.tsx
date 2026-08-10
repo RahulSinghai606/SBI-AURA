@@ -41,6 +41,8 @@ type Metrics = {
   p99: number;
   traces: { id: string; route: string; totalMs: number; spans: { name: string; startMs: number; durMs: number; status: string; note?: string }[] }[];
   events: { seq: number; at: number; actor: string; action: string; severity: string }[];
+  dataEvents: { seq: number; at: number; api: string; account: string; fields: number; ms: number }[];
+  actions: { id: string; at: number; type: string; summary: string; customer: string; account: string; status: string; result?: string; decidedBy?: string }[];
   uptimeSec: number;
 };
 
@@ -139,6 +141,21 @@ export default function OpsConsole() {
     } catch {}
     setPiiBusy(false);
     poll();
+  };
+
+  const [decideBusy, setDecideBusy] = useState<string | null>(null);
+  // maker-checker disposition — only an approval touches the SBI core
+  const decide = async (id: string, decision: "approve" | "reject") => {
+    setDecideBusy(id);
+    try {
+      await fetch("/api/ops/actions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, decision }),
+      });
+    } catch {}
+    await poll();
+    setDecideBusy(null);
   };
 
   const runSbi = async () => {
@@ -322,6 +339,89 @@ export default function OpsConsole() {
               </div>
             </div>
           </div>
+        </section>
+
+        {/* ═══ GOVERNANCE — data plane + maker-checker ═══ */}
+        <section className={`rounded-3xl border card-elevate p-6 xl:col-span-2 ${engaged ? "bg-[#20100e] border-red-900/40" : "bg-surface border-line"}`}>
+          <p className={`text-[11px] font-bold tracking-[0.25em] uppercase mb-4 flex items-center gap-2 ${engaged ? "text-red-400" : "text-ink-faint"}`}>
+            <Database className="w-4 h-4" /> Data plane — inbound from SBI core · lineage & minimisation
+          </p>
+          <div className="grid grid-cols-3 gap-2 mb-3">
+            {[
+              { k: "Source", v: "Bank-owned APIs only" },
+              { k: "Identifiers", v: "Masked · last 4 digits" },
+              { k: "Retention", v: "None — twin built per request" },
+            ].map((x) => (
+              <div key={x.k} className={`rounded-xl p-2.5 border text-center ${engaged ? "bg-white/5 border-red-900/30" : "bg-bg border-line"}`}>
+                <p className={`text-[9px] uppercase tracking-wide ${engaged ? "text-red-400/70" : "text-ink-faint"}`}>{x.k}</p>
+                <p className={`text-[11px] font-bold ${engaged ? "text-red-100" : "text-navy"}`}>{x.v}</p>
+              </div>
+            ))}
+          </div>
+          <div className="space-y-1.5 max-h-64 overflow-y-auto thin-scroll pr-1">
+            {(m?.dataEvents ?? []).length === 0 && (
+              <p className={`text-xs py-6 text-center ${engaged ? "text-red-300/60" : "text-ink-faint"}`}>No pulls yet — open the Command Center to assemble the live roster.</p>
+            )}
+            {(m?.dataEvents ?? []).map((e) => (
+              <div key={e.seq} className={`flex items-center gap-2 rounded-lg px-3 py-2 text-[11px] border ${engaged ? "bg-white/5 border-red-900/30 text-red-200/80" : "bg-bg border-line text-ink-soft"}`}>
+                <span className={`font-mono font-bold shrink-0 ${engaged ? "text-red-300" : "text-sbi"}`}>{e.api}</span>
+                <span className="font-mono shrink-0">a/c {e.account}</span>
+                <span className="shrink-0">{e.fields} fields</span>
+                <span className={`ml-auto shrink-0 ${engaged ? "text-red-400/70" : "text-ink-faint"}`}>{e.ms}ms · {new Date(e.at).toLocaleTimeString("en-IN", { hour12: false })}</span>
+              </div>
+            ))}
+          </div>
+          <p className={`mt-2 text-[10px] leading-relaxed ${engaged ? "text-red-300/60" : "text-ink-faint"}`}>
+            Every inbound pull is logged with API, masked account and field count — DPDP data-minimisation and purpose-limitation, auditable in real time.
+          </p>
+        </section>
+
+        <section className={`rounded-3xl border card-elevate p-6 xl:col-span-1 ${engaged ? "bg-[#20100e] border-red-900/40" : "bg-surface border-line"}`}>
+          <p className={`text-[11px] font-bold tracking-[0.25em] uppercase mb-4 flex items-center gap-2 ${engaged ? "text-red-400" : "text-ink-faint"}`}>
+            <ShieldCheck className="w-4 h-4" /> Action approvals — maker-checker
+          </p>
+          <div className="space-y-2 max-h-[340px] overflow-y-auto thin-scroll pr-1">
+            {(m?.actions ?? []).length === 0 && (
+              <p className={`text-xs py-6 text-center ${engaged ? "text-red-300/60" : "text-ink-faint"}`}>No proposals yet — run the swarm and propose an action in the Command Center.</p>
+            )}
+            {(m?.actions ?? []).map((a) => (
+              <div key={a.id} className={`rounded-xl border p-3 ${engaged ? "bg-white/5 border-red-900/40" : "bg-bg border-line"}`}>
+                <div className="flex items-center gap-2">
+                  <span className={`text-[9px] font-bold uppercase tracking-wider rounded-full px-2 py-0.5 ${
+                    a.status === "pending" ? "text-warm bg-warm/10" : a.status === "executed" ? "text-teal bg-teal/10" : a.status === "rejected" ? "text-red-500 bg-red-500/10" : "text-ink-faint bg-bg"
+                  }`}>{a.status}</span>
+                  <span className={`font-mono text-[10px] ${engaged ? "text-red-300" : "text-ink-faint"}`}>{a.id}</span>
+                </div>
+                <p className={`text-xs font-bold mt-1.5 ${engaged ? "text-red-100" : "text-navy"}`}>{a.summary}</p>
+                <p className={`text-[10px] mt-0.5 ${engaged ? "text-red-300/70" : "text-ink-soft"}`}>{a.customer} · a/c {a.account || "—"}</p>
+                {a.status === "pending" && (
+                  <div className="flex gap-2 mt-2">
+                    <button
+                      onClick={() => decide(a.id, "approve")}
+                      disabled={decideBusy === a.id}
+                      className="flex-1 rounded-lg bg-teal text-white text-[11px] font-bold py-2 hover:brightness-110 transition-all disabled:opacity-60"
+                    >
+                      {decideBusy === a.id ? "Executing…" : "Approve & execute"}
+                    </button>
+                    <button
+                      onClick={() => decide(a.id, "reject")}
+                      disabled={decideBusy === a.id}
+                      className="flex-1 rounded-lg bg-red-500/15 text-red-600 text-[11px] font-bold py-2 hover:bg-red-500/25 transition-all disabled:opacity-60"
+                    >
+                      Reject
+                    </button>
+                  </div>
+                )}
+                {a.status === "executed" && a.result && (
+                  <p className="text-[10px] font-mono text-teal mt-1.5">✓ opened on SBI core · a/c {a.result}</p>
+                )}
+                {a.decidedBy && <p className={`text-[9px] mt-1 ${engaged ? "text-red-400/60" : "text-ink-faint"}`}>{a.decidedBy}</p>}
+              </div>
+            ))}
+          </div>
+          <p className={`mt-2 text-[10px] leading-relaxed ${engaged ? "text-red-300/60" : "text-ink-faint"}`}>
+            Agents can only PROPOSE. A named officer approves before the core is touched — RBI IT-Governance dual control, and the kill switch freezes this queue too.
+          </p>
         </section>
 
         {/* ═══ SECURITY ═══ */}

@@ -115,24 +115,31 @@ export default function DemoPage() {
   };
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  const [liveLoading, setLiveLoading] = useState(false);
+  const [liveLoading, setLiveLoading] = useState(true);
+  const [liveRoster, setLiveRoster] = useState<Customer[]>([]);
 
-  // pull the LIVE twin — every field assembled from SBI core-banking APIs
-  const loadLiveTwin = async () => {
-    if (liveLoading) return;
-    setLiveLoading(true);
-    try {
-      const r = await fetch("/api/sbi/twin", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-      if (r.status === 423) {
-        setKilled(true);
-        setLiveLoading(false);
-        return;
-      }
-      const d = await r.json();
-      if (d.customer) selectCustomer(d.customer as Customer);
-    } catch {}
-    setLiveLoading(false);
-  };
+  // pull the LIVE roster on mount — every twin assembled from SBI core-banking APIs
+  useEffect(() => {
+    let on = true;
+    (async () => {
+      try {
+        const r = await fetch("/api/sbi/roster", { cache: "no-store" });
+        if (r.ok) {
+          const d = await r.json();
+          const twins = (d.roster ?? []).map((t: { customer: Customer }) => t.customer);
+          if (on && twins.length) {
+            setLiveRoster(twins);
+            selectCustomer(twins[0]);
+          }
+        }
+      } catch {}
+      if (on) setLiveLoading(false);
+    })();
+    return () => {
+      on = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const selectCustomer = (c: Customer) => {
     setCustomer(c);
@@ -191,19 +198,28 @@ export default function DemoPage() {
   const [execBusy, setExecBusy] = useState(false);
   const [execResult, setExecResult] = useState<string | null>(null);
 
-  // execute the approved NBA for real on the SBI core (Account Creation API)
+  // the agent PROPOSES the action — a human officer must approve it on /ops
+  // before anything touches the SBI core (maker-checker)
   const executeNba = async () => {
     if (execBusy || execResult) return;
     setExecBusy(true);
     try {
-      const r = await fetch("/api/sbi/execute", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const r = await fetch("/api/sbi/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customer: customer.name,
+          account: customer.id.startsWith("live-") ? customer.id.slice(5) : "",
+          summary: nba ? `${nba.action} — ${nba.product}` : "Open deposit account (agent-recommended)",
+        }),
+      });
       if (r.status === 423) {
         setKilled(true);
         setExecBusy(false);
         return;
       }
       const d = await r.json();
-      if (d.live && d.accountNumber) setExecResult(d.accountNumber);
+      if (d.proposed) setExecResult(d.action.id);
     } catch {}
     setExecBusy(false);
   };
@@ -308,7 +324,47 @@ export default function DemoPage() {
       <div className="mx-auto max-w-[1500px] px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-[300px_1fr_1.1fr] gap-5">
         {/* ── LEFT: customer roster ── */}
         <aside className="space-y-3">
-          <p className="text-[11px] font-bold tracking-[0.22em] uppercase text-ink-faint px-1">Customer Digital Twins</p>
+          <p className="text-[11px] font-bold tracking-[0.22em] uppercase text-teal px-1 flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-teal animate-pulse" /> Live customers · SBI core
+          </p>
+          {liveLoading && (
+            <div className="rounded-2xl border border-teal/40 glass p-4">
+              <p className="text-xs text-ink-soft">Pulling live relationships from api.innohub.sbi…</p>
+            </div>
+          )}
+          {liveRoster.map((c) => {
+            const active = c.id === customer.id;
+            return (
+              <button
+                key={c.id}
+                onClick={() => selectCustomer(c)}
+                className={`w-full text-left rounded-2xl p-4 transition-all border ${
+                  active ? "bg-surface border-teal card-elevate -translate-y-0.5" : "glass border-teal/30 hover:border-teal hover:bg-white"
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <div
+                    className="w-11 h-11 rounded-full flex items-center justify-center font-display font-bold text-white shrink-0"
+                    style={{ background: `linear-gradient(135deg, hsl(${c.avatarHue} 70% 45%), hsl(${c.avatarHue + 40} 75% 55%))` }}
+                  >
+                    {c.name.split(" ").filter(Boolean).map((n) => n[0]).slice(0, 2).join("")}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-semibold text-navy truncate">{c.name}</p>
+                    <p className="text-xs text-ink-soft truncate">{c.segment.replace("LIVE · ", "")}</p>
+                  </div>
+                </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-teal bg-teal/10 rounded-full px-2 py-0.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-teal animate-pulse" /> LIVE · api.innohub.sbi
+                  </span>
+                  <span className="text-[10px] text-ink-faint">{c.balance}</span>
+                </div>
+              </button>
+            );
+          })}
+
+          <p className="text-[11px] font-bold tracking-[0.22em] uppercase text-ink-faint px-1 pt-3">Synthetic segment previews</p>
           {customers.map((c) => {
             const active = c.id === customer.id;
             return (
@@ -332,40 +388,14 @@ export default function DemoPage() {
                   </div>
                 </div>
                 <div className="mt-3 flex items-center gap-2">
-                  <span className="text-[10px] font-semibold text-sbi bg-sbi/8 rounded-full px-2 py-0.5">{c.signals.filter((s) => s.strength === "high").length} hot signals</span>
+                  <span className="text-[10px] font-semibold text-warm bg-warm/10 rounded-full px-2 py-0.5">synthetic demo</span>
                   <span className="text-[10px] text-ink-faint">{c.relationshipYears}y relationship</span>
                 </div>
               </button>
             );
           })}
-          {/* LIVE twin — assembled at runtime from SBI core-banking APIs */}
-          <button
-            onClick={loadLiveTwin}
-            disabled={liveLoading}
-            className={`w-full text-left rounded-2xl p-4 transition-all border ${
-              customer.id === "live-sbi"
-                ? "bg-surface border-teal card-elevate -translate-y-0.5"
-                : "glass border-teal/40 hover:border-teal hover:bg-white"
-            }`}
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-11 h-11 rounded-full flex items-center justify-center font-display font-bold text-white shrink-0 bg-gradient-to-br from-teal to-cyan">
-                {liveLoading ? "…" : "SBI"}
-              </div>
-              <div className="min-w-0">
-                <p className="font-semibold text-navy truncate">{liveLoading ? "Pulling from SBI core…" : "Live SBI Customer"}</p>
-                <p className="text-xs text-ink-soft truncate">Twin built from real core-banking data</p>
-              </div>
-            </div>
-            <div className="mt-3 flex items-center gap-2">
-              <span className="inline-flex items-center gap-1 text-[10px] font-bold text-teal bg-teal/10 rounded-full px-2 py-0.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-teal animate-pulse" /> LIVE · api.innohub.sbi
-              </span>
-              <span className="text-[10px] text-ink-faint">3 core APIs</span>
-            </div>
-          </button>
           <div className="rounded-2xl border border-dashed border-line p-4 text-center">
-            <p className="text-xs text-ink-faint leading-relaxed">+ 51,99,99,996 more Twins<br />in production rollout</p>
+            <p className="text-xs text-ink-faint leading-relaxed">In production the live roster IS the CIF book —<br />synthetic previews exist only to show segment breadth.</p>
           </div>
         </aside>
 
@@ -614,14 +644,15 @@ export default function DemoPage() {
                             }`}
                           >
                             {execResult
-                              ? `✓ OPENED on SBI core · a/c ${execResult}`
+                              ? "✓ PROPOSED — awaiting officer approval (maker-checker)"
                               : execBusy
-                                ? "Calling SBI Account Creation API…"
-                                : "Execute on SBI core — open deposit account (live)"}
+                                ? "Filing action on the approval queue…"
+                                : "Propose action on SBI core — open deposit account"}
                           </button>
                           {execResult && (
                             <p className="text-[10px] text-ink-faint text-center">
-                              Real account number returned by api.innohub.sbi · action recorded on the ops audit stream
+                              No agent touches the core unmediated. A bank officer approves or rejects this in the{" "}
+                              <Link href="/ops" className="font-bold text-sbi underline underline-offset-2">Ops Console →</Link>
                             </p>
                           )}
                         </div>

@@ -7,7 +7,7 @@
 // demo never stalls if the sandbox is down.
 // ─────────────────────────────────────────────────────────────
 
-import { ops, logEvent } from "./ops";
+import { ops, logEvent, recordDataPull } from "./ops";
 
 const BASE = process.env.SBI_API_BASE ?? "https://api.innohub.sbi";
 
@@ -37,6 +37,9 @@ async function sbiPost<T>(service: string, path: string, body: Record<string, un
       return { ok: false, error: data?.ErrorDescription ?? `HTTP ${res.status}`, ms };
     }
     logEvent("sbi-api", `${service} responded in ${ms}ms`, "info");
+    // data-plane lineage: which API, which account (masked), how many fields
+    const acct = String(body.AccountNumber ?? body.corporateAccountNumber ?? "");
+    recordDataPull(service.split("/")[0], acct, Object.keys(data as object).length, ms);
     return { ok: true, data, ms };
   } catch (e) {
     s.counters.errors++;
@@ -108,7 +111,7 @@ export function createDepositAccount() {
 // come from Customer Information Enquiry + Account Enquiry + Account Balance.
 // ─────────────────────────────────────────────────────────────
 
-import type { Customer, Signal } from "./data";
+import type { Customer } from "./data";
 
 type CoreEnquiry = {
   CustomerName: string;
@@ -127,123 +130,144 @@ type CoreEnquiry = {
   }[];
 };
 
-const LIVE_PRIMARY_ACCOUNT = "30095497360"; // retail customer on the InnoHub core
-const LIVE_SECONDARY_ACCOUNT = "30002709704"; // second linked relationship
-
 export type LiveTwinResult = {
   customer: Customer;
   provenance: { source: string; ms: number; ok: boolean }[];
   fetchedAt: number;
 };
 
-export async function getLiveTwin(): Promise<LiveTwinResult> {
-  const [primary, secondary, corp] = await Promise.all([
-    sbiPost<CoreEnquiry>("customerinformationenquiry/v1", "/enquiry", { AccountNumber: LIVE_PRIMARY_ACCOUNT }),
-    sbiPost<CoreEnquiry>("accountenquiryapi/v1", "/accounts", { AccountNumber: LIVE_SECONDARY_ACCOUNT }),
-    getAccountBalance(),
-  ]);
+// Three REAL relationships exposed by the InnoHub sandbox — each is a distinct
+// engagement use case. This is the production data path: point ROSTER at the
+// bank's CIF book and nothing else changes.
+const ROSTER = [
+  { account: "30095497360", kind: "saver" as const },
+  { account: "30002709704", kind: "winback" as const },
+  { account: "corp" as const, kind: "corporate" as const },
+];
 
-  const name = primary.ok ? primary.data.CustomerName : "SBI Core Customer";
-  const bal = primary.ok ? primary.data.TotalBalanceClearedBalance.trim() : "—";
-  const txnCount = primary.ok ? parseInt(primary.data.NumberOfTransactions || "0", 10) : 0;
-
-  const signals: Signal[] = [];
-  if (primary.ok) {
-    for (const [i, t] of (primary.data.AccountDetails ?? []).slice(0, 3).entries()) {
-      signals.push({
-        id: `live-txn-${i}`,
-        type: "transaction",
-        label: `${t.TransactionDesc || "Core txn"} · ₹${t.TransactionAmount.trim()}`,
-        detail: `Posted ${t.PostDate} · branch ${t.Branch} · journal ${t.JournalNumber} · running balance ₹${t.CurrentBalance.trim()} — pulled live from Customer Information Enquiry API`,
-        time: t.PostDate,
-        strength: "high",
-      });
-    }
-    signals.push({
-      id: "live-bal",
-      type: "transaction",
-      label: `Cleared balance ₹${bal}`,
-      detail: `${txnCount} transactions on record for a/c ${primary.data.AccountNumber} — live from SBI core`,
-      time: "now",
-      strength: "high",
-    });
-  }
-  if (secondary.ok) {
-    const d = secondary.data.AccountDetails?.[0];
-    signals.push({
-      id: "live-sec",
-      type: "transaction",
-      label: `Linked a/c activity: ${d?.TransactionDesc ?? "enquiry ok"}`,
-      detail: `A/c ${secondary.data.AccountNumber} · ${parseInt(secondary.data.NumberOfTransactions || "0", 10)} txns · live from Account Enquiry API`,
-      time: d?.PostDate ?? "now",
-      strength: "medium",
-    });
-  }
-  if (corp.ok) {
-    signals.push({
-      id: "live-corp",
-      type: "transaction",
-      label: `Corporate float ₹${Number(corp.data.data.availBalance).toLocaleString("en-IN")}`,
-      detail: `Available balance on linked corporate a/c ${corp.data.data.corporateAccountNumber} · ref ${corp.data.data.aPIResRefNo} — live from Account Balance API`,
-      time: "now",
-      strength: "medium",
-    });
-  }
-
-  const customer: Customer = {
-    id: "live-sbi",
+function twinShell(id: string, name: string, segment: string, balance: string, hue: number): Customer {
+  return {
+    id,
     name,
     age: 41,
-    segment: "LIVE · SBI Core Banking",
-    location: "Branch 61034",
+    segment,
+    location: "SBI core banking",
     language: "English / Hindi",
-    avatarHue: 265,
-    products: ["Savings A/c (live)", "Linked a/c (live)"],
-    balance: `₹${bal}`,
+    avatarHue: hue,
+    products: ["Savings A/c (live)"],
+    balance,
     relationshipYears: 3,
     yonoActive: true,
-    twinSummary: `Twin assembled at runtime from SBI core-banking APIs — no synthetic data. ${name}, cleared balance ₹${bal}, ${txnCount} transactions on record; latest movement "${primary.ok ? primary.data.AccountDetails?.[0]?.TransactionDesc ?? "" : ""}". Idle cleared balance with no deposit product attached — classic sweep-to-deposit opportunity.`,
-    goals: ["Put idle balance to work", "Consolidate linked accounts"],
-    signals,
+    twinSummary: "",
+    goals: [],
+    signals: [],
     memory: [
-      { id: "lm1", kind: "semantic", text: "Twin fields sourced live: Customer Information Enquiry (name, balance, transactions), Account Enquiry (linked a/c), Account Balance (corporate float).", time: "runtime" },
-      { id: "lm2", kind: "semantic", text: "DPDP: identifiers are redacted by the Azure PII guard before this twin ever reaches the LLM.", time: "runtime" },
+      { id: "lm1", kind: "semantic", text: "All twin fields pulled live from SBI core-banking APIs; account numbers masked; nothing persisted (DPDP storage-limitation).", time: "runtime" },
+      { id: "lm2", kind: "semantic", text: "Identifiers are redacted by the Azure PII guard before this twin reaches the LLM.", time: "runtime" },
     ],
     fallback: {
       steps: [
-        { agent: "Sensor Agent", icon: "radar", finding: `Live core pull: cleared balance ₹${bal}, ${txnCount} txns, latest credit by transfer.`, confidence: 0.9 },
-        { agent: "Life-Event Agent", icon: "sparkles", finding: "Idle cleared balance with no attached deposit product — savings intent inferred.", confidence: 0.82 },
-        { agent: "Risk & Compliance Agent", icon: "shield", finding: "Data pulled over bank-owned APIs; DPDP redaction applied pre-LLM; suitability clear for deposit products.", confidence: 0.97 },
-        { agent: "Offer Agent", icon: "gift", finding: `Next-best-action: open an SBI term deposit against the idle ₹${bal} cleared balance.`, confidence: 0.88 },
-        { agent: "Conversation Agent", icon: "message", finding: "Drafted a numbers-first WhatsApp nudge referencing the customer's real balance.", confidence: 0.9 },
+        { agent: "Sensor Agent", icon: "radar", finding: "Live core pull completed; signals correlated from real transactions.", confidence: 0.9 },
+        { agent: "Life-Event Agent", icon: "sparkles", finding: "Engagement window inferred from account activity pattern.", confidence: 0.82 },
+        { agent: "Risk & Compliance Agent", icon: "shield", finding: "Bank-owned API data; DPDP redaction applied pre-LLM; suitability clear.", confidence: 0.97 },
+        { agent: "Offer Agent", icon: "gift", finding: "Next-best-action selected from the live balance/transaction profile.", confidence: 0.88 },
+        { agent: "Conversation Agent", icon: "message", finding: "Numbers-first outreach drafted, pending officer approval.", confidence: 0.9 },
       ],
       nba: {
-        action: "Sweep idle balance into a term deposit",
-        product: "SBI Term Deposit — opened live via Account Creation API",
-        rationale: `Cleared balance ₹${bal} sitting idle; a deposit account can be opened on the core in one call.`,
+        action: "Engage based on live account profile",
+        product: "SBI deposit product",
+        rationale: "Derived from live core-banking signals.",
         channel: "WhatsApp",
         timing: "Today, post-6pm",
         language: "English",
         compliance: [
-          { rule: "RBI deposit product suitability", status: "pass" },
+          { rule: "RBI product suitability", status: "pass" },
           { rule: "DPDP consent & purpose limitation", status: "pass" },
-          { rule: "Data pulled via bank-owned APIs only", status: "pass" },
-          { rule: "Human-override enabled", status: "pass" },
+          { rule: "Bank-owned APIs only", status: "pass" },
+          { rule: "Maker-checker on every action", status: "pass" },
         ],
-        message: `Hello! Your account shows a cleared balance of ₹${bal} that could be earning more. I can open an SBI term deposit for you right now — takes one tap to approve. — AURA, your SBI assistant`,
+        message: "Hello! I have a suggestion based on your recent account activity — shall I share it? — AURA, your SBI assistant",
       },
-      chatOpener: `Hello! 👋 I'm AURA. I noticed a cleared balance of ₹${bal} sitting idle in your account — would you like me to open a term deposit so it starts earning?`,
+      chatOpener: "Hello! 👋 I'm AURA. I have a suggestion based on your recent account activity — would you like to hear it?",
     },
-    personaPrompt: `Customer: ${name}, retail SBI customer, cleared balance ₹${bal}, ${txnCount} transactions on record (all data pulled live from SBI core-banking APIs). Latest activity: credit by transfer. Considering a term deposit for the idle balance.`,
+    personaPrompt: "",
   };
+}
 
+// Build one live twin for a real account. kind steers the use-case framing.
+export async function buildLiveTwin(account: string, kind: "saver" | "winback" | "corporate"): Promise<LiveTwinResult> {
+  if (kind === "corporate") {
+    const corp = await getAccountBalance();
+    const bal = corp.ok ? Number(corp.data.data.availBalance).toLocaleString("en-IN") : "—";
+    const c = twinShell("live-corp", "Corporate Client · Treasury", "LIVE · Corporate Banking", `₹${bal}`, 330);
+    c.products = ["Corporate current a/c (live)"];
+    c.twinSummary = `Twin assembled from the live Account Balance API. Corporate current account holds ₹${bal} available (book = available, zero hold, zero unclear) — idle float earning nothing overnight. Classic auto-sweep / Multi Option Deposit opportunity for the treasury.`;
+    c.goals = ["Overnight yield on idle float", "Zero manual treasury ops"];
+    if (corp.ok)
+      c.signals = [
+        { id: "c1", type: "transaction", label: `Available float ₹${bal}`, detail: `Corporate a/c ending ${corp.data.data.corporateAccountNumber.slice(-4)} · ref ${corp.data.data.aPIResRefNo} — live from Account Balance API (${corp.ms}ms)`, time: "now", strength: "high" },
+        { id: "c2", type: "transaction", label: "Hold ₹0 · unclear ₹0", detail: "Entire balance deployable — no lien, no float risk — live from Account Balance API", time: "now", strength: "medium" },
+      ];
+    c.personaPrompt = `Corporate treasury client, available float ₹${bal} on the current account (live from SBI core). Considering auto-sweep into overnight deposits.`;
+    return { customer: c, provenance: [{ source: "Account Balance", ms: corp.ms, ok: corp.ok }], fetchedAt: Date.now() };
+  }
+
+  const [info, stmt] = await Promise.all([
+    sbiPost<CoreEnquiry>(kind === "saver" ? "customerinformationenquiry/v1" : "accountenquiryapi/v1", kind === "saver" ? "/enquiry" : "/accounts", { AccountNumber: account }),
+    kind === "saver" ? getAccountStatement(account) : Promise.resolve({ ok: false as const, error: "n/a", ms: 0 }),
+  ]);
+
+  const name = info.ok ? info.data.CustomerName : "SBI Retail Customer";
+  const bal = info.ok ? info.data.TotalBalanceClearedBalance.trim() : "—";
+  const txns = info.ok ? parseInt(info.data.NumberOfTransactions || "0", 10) : 0;
+  const last = info.ok ? info.data.AccountDetails?.[0] : undefined;
+
+  const c = twinShell(`live-${account}`, name, kind === "saver" ? "LIVE · Retail — Active Saver" : "LIVE · Retail — Win-back", `₹${bal}`, kind === "saver" ? 265 : 20);
+  if (info.ok) {
+    c.signals = (info.data.AccountDetails ?? []).slice(0, 3).map((t, i) => ({
+      id: `t${i}`,
+      type: "transaction" as const,
+      label: `${t.TransactionDesc || "Core txn"} · ₹${t.TransactionAmount.trim()}`,
+      detail: `Posted ${t.PostDate} · branch ${t.Branch} · journal ${t.JournalNumber} · running balance ₹${t.CurrentBalance.trim()} — live from ${kind === "saver" ? "Customer Information Enquiry" : "Account Enquiry"} API`,
+      time: t.PostDate,
+      strength: "high" as const,
+    }));
+    c.signals.push({ id: "bal", type: "transaction", label: `Cleared balance ₹${bal}`, detail: `${txns} transactions on record for a/c ending ${account.slice(-4)} — live from SBI core`, time: "now", strength: "high" });
+  }
+  if (kind === "saver") {
+    c.twinSummary = `Twin assembled from SBI core APIs — no synthetic data. ${name}: cleared balance ₹${bal}, ${txns} transactions; latest movement "${last?.TransactionDesc ?? ""}" on ${last?.PostDate ?? ""}. Idle cleared balance with no deposit product attached — sweep-to-deposit opportunity.`;
+    c.goals = ["Put idle balance to work", "Consolidate linked accounts"];
+    c.personaPrompt = `Customer: ${name}, retail SBI customer, cleared balance ₹${bal}, ${txns} transactions (live from SBI core). Latest: credit by transfer. Good fit for a term/sweep deposit on the idle balance.`;
+  } else {
+    c.twinSummary = `Twin assembled from SBI core APIs — no synthetic data. ${name}: balance ₹${bal}, ${txns} transactions; latest movement "${last?.TransactionDesc ?? ""}" (${last?.PostDate ?? ""}) — the account was emptied to closure. Dormant/churned relationship: a respectful win-back journey, not a product push.`;
+    c.goals = ["Understand why the customer left", "Rebuild the relationship"];
+    c.personaPrompt = `Customer: ${name}, retail SBI customer whose account shows "${last?.TransactionDesc ?? "closure transfer"}" and a ₹${bal} balance (live from SBI core). Churned/dormant — the right move is an empathetic win-back conversation, never a hard sell.`;
+  }
   return {
-    customer,
+    customer: c,
     provenance: [
-      { source: "Customer Information Enquiry", ms: primary.ms, ok: primary.ok },
-      { source: "Account Enquiry", ms: secondary.ms, ok: secondary.ok },
-      { source: "Account Balance", ms: corp.ms, ok: corp.ok },
+      { source: kind === "saver" ? "Customer Information Enquiry" : "Account Enquiry", ms: info.ms, ok: info.ok },
+      ...(kind === "saver" ? [{ source: "Account Statement Enquiry", ms: stmt.ms, ok: stmt.ok }] : []),
     ],
     fetchedAt: Date.now(),
   };
+}
+
+// Full live roster — one twin per real relationship on the core.
+export async function getLiveRoster(): Promise<LiveTwinResult[]> {
+  return Promise.all(
+    ROSTER.map((r) => buildLiveTwin(r.account === "corp" ? "corp" : r.account, r.kind))
+  );
+}
+
+// Resolve any "live-*" customer id to a freshly built twin.
+export async function resolveLiveCustomer(id: string): Promise<Customer | null> {
+  if (id === "live-sbi") id = "live-30095497360"; // legacy alias
+  if (id === "live-corp") return (await buildLiveTwin("corp", "corporate")).customer;
+  if (id.startsWith("live-")) {
+    const acct = id.slice(5);
+    const entry = ROSTER.find((r) => r.account === acct);
+    return (await buildLiveTwin(acct, entry?.kind === "winback" ? "winback" : "saver")).customer;
+  }
+  return null;
 }

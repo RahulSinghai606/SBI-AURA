@@ -14,6 +14,8 @@ export async function GET(req: NextRequest) {
     p99: percentile(99),
     traces: s.traces.slice(0, 6),
     events: s.events.slice(0, 30),
+    dataEvents: s.dataEvents.slice(0, 15),
+    actions: s.actions.slice(0, 10),
     uptimeSec: Math.round((Date.now() - s.startedAt) / 1000),
   });
 }

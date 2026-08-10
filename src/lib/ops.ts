@@ -8,6 +8,24 @@ export type Span = { name: string; startMs: number; durMs: number; status: "ok" 
 export type Trace = { id: string; route: string; startedAt: number; totalMs: number; spans: Span[] };
 export type OpsEvent = { seq: number; at: number; actor: string; action: string; severity: "info" | "warn" | "critical" };
 
+// Data-plane lineage: one entry per inbound pull from an SBI core API.
+export type DataEvent = { seq: number; at: number; api: string; account: string; fields: number; ms: number };
+
+// Maker-checker: agent-proposed actions that a human officer must approve
+// before anything touches the core.
+export type PendingAction = {
+  id: string;
+  at: number;
+  type: string;
+  summary: string;
+  customer: string;
+  account: string;
+  status: "pending" | "approved" | "rejected" | "executed" | "failed";
+  result?: string;
+  decidedBy?: string;
+  decidedAt?: number;
+};
+
 type OpsState = {
   killSwitch: { engaged: boolean; by: string; at: number | null; reason: string };
   counters: {
@@ -23,6 +41,8 @@ type OpsState = {
   latencies: number[]; // last 200 request latencies (ms)
   traces: Trace[]; // last 20
   events: OpsEvent[]; // last 100
+  dataEvents: DataEvent[]; // last 50 inbound core pulls (lineage)
+  actions: PendingAction[]; // maker-checker queue (last 30)
   seq: number;
   startedAt: number;
 };
@@ -37,9 +57,47 @@ function init(): OpsState {
     latencies: [],
     traces: [],
     events: [],
+    dataEvents: [],
+    actions: [],
     seq: 5120,
     startedAt: Date.now(),
   };
+}
+
+// mask account numbers before anything is displayed or logged — only the
+// last 4 digits leave the data plane
+export function maskAccount(acct: string): string {
+  const a = (acct || "").replace(/\s/g, "");
+  return a.length > 4 ? `••••${a.slice(-4)}` : a || "—";
+}
+
+// lineage entry for every inbound pull from an SBI core API
+export function recordDataPull(api: string, account: string, fields: number, ms: number) {
+  const s = ops();
+  s.dataEvents.unshift({ seq: ++s.seq, at: Date.now(), api, account: maskAccount(account), fields, ms });
+  if (s.dataEvents.length > 50) s.dataEvents.pop();
+}
+
+// maker-checker: agent proposes, officer disposes
+export function proposeAction(type: string, summary: string, customer: string, account: string): PendingAction {
+  const s = ops();
+  const a: PendingAction = {
+    id: `act-${Date.now().toString(36)}${Math.floor(Math.random() * 100)}`,
+    at: Date.now(),
+    type,
+    summary,
+    customer,
+    account: maskAccount(account),
+    status: "pending",
+  };
+  s.actions.unshift(a);
+  if (s.actions.length > 30) s.actions.pop();
+  logEvent("nba-executor", `ACTION PROPOSED (${type}) for ${customer} — awaiting officer approval`, "warn");
+  return a;
+}
+
+export function getAction(id: string): PendingAction | undefined {
+  return ops().actions.find((a) => a.id === id);
 }
 
 export function ops(): OpsState {
