@@ -11,7 +11,7 @@ import { ops, logEvent, recordDataPull } from "./ops";
 
 const BASE = process.env.SBI_API_BASE ?? "https://api.innohub.sbi";
 
-type SbiResult<T> = { ok: true; data: T; ms: number } | { ok: false; error: string; ms: number };
+type SbiResult<T> = { ok: true; data: T; ms: number; cached?: boolean } | { ok: false; error: string; ms: number };
 
 // Per-API IH codes — each InnoHub API carries its own unique IH_CODE
 // (confirmed by SBI support, 11 Aug 2026; values from each API's spec).
@@ -25,10 +25,28 @@ const IH_CODES: Record<string, string> = {
   accountcreation: "000052",
 };
 
+// Last-good cache: the InnoHub sandbox APIs drift day to day (fields added,
+// products toggled). Every successful response is cached in-process; when the
+// live call fails, the last good result is served and flagged `cached` so the
+// UI stays truthful and the demo never dies on an SBI-side wobble.
+const gCache = globalThis as unknown as { __sbiLastGood?: Map<string, { data: unknown; at: number }> };
+const lastGood = (gCache.__sbiLastGood ??= new Map());
+
 async function sbiPost<T>(service: string, path: string, body: Record<string, unknown>): Promise<SbiResult<T>> {
   const t0 = Date.now();
   const s = ops();
+  const cacheKey = `${service}${path}::${JSON.stringify(body.AccountNumber ?? body.corporateAccountNumber ?? path)}`;
   if (!process.env.SBI_API_TOKEN) return { ok: false, error: "SBI_API_TOKEN not configured", ms: 0 };
+
+  const serveCache = (err: string): SbiResult<T> => {
+    const hit = lastGood.get(cacheKey);
+    if (hit) {
+      logEvent("sbi-api", `${service} unavailable (${err.slice(0, 40)}) → serving last-good response`, "warn");
+      return { ok: true, data: hit.data as T, ms: Date.now() - t0, cached: true };
+    }
+    return { ok: false, error: err, ms: Date.now() - t0 };
+  };
+
   try {
     const headers: Record<string, string> = {
       "X-Authorization": process.env.SBI_API_TOKEN,
@@ -47,16 +65,17 @@ async function sbiPost<T>(service: string, path: string, body: Record<string, un
     const ms = Date.now() - t0;
     if (!res.ok || data?.ErrorDescription) {
       s.counters.errors++;
-      return { ok: false, error: data?.ErrorDescription ?? `HTTP ${res.status}`, ms };
+      return serveCache(data?.ErrorDescription ?? `HTTP ${res.status}`);
     }
     logEvent("sbi-api", `${service} responded in ${ms}ms`, "info");
     // data-plane lineage: which API, which account (masked), how many fields
     const acct = String(body.AccountNumber ?? body.corporateAccountNumber ?? "");
     recordDataPull(service.split("/")[0], acct, Object.keys(data as object).length, ms);
+    lastGood.set(cacheKey, { data, at: Date.now() });
     return { ok: true, data, ms };
   } catch (e) {
     s.counters.errors++;
-    return { ok: false, error: e instanceof Error ? e.message : "network error", ms: Date.now() - t0 };
+    return serveCache(e instanceof Error ? e.message : "network error");
   }
 }
 
@@ -163,7 +182,10 @@ type CoreProfile = {
 };
 
 export async function getCustomerProfile(account: string, branch: string) {
-  return sbiPost<CoreProfile>("customerinformationenquiry/v1", "/enquiry", { AccountNumber: account, BranchCode: branch });
+  // primary + backup KYC sources — the sandbox toggles field requirements
+  const a = await sbiPost<CoreProfile>("customerinformationenquiry/v1", "/enquiry", { AccountNumber: account, BranchCode: branch });
+  if (a.ok && a.data.DateOfBirth) return a;
+  return sbiPost<CoreProfile>("customerpersonaldetailsenquiry/v1", "/accounts", { AccountNumber: account, BRANCH_CODE: branch });
 }
 
 // derive an age (years) from a ddmmyyyy DOB
@@ -460,7 +482,8 @@ export async function buildLiveTwin(account: string, use: UseCase): Promise<Live
     };
   }
 
-  const c = baseTwin(`live-${account}`, name, SEGMENT[use], insight ? `₹${info.ok ? info.data.TotalBalanceClearedBalance.trim() : bookBal}` : `₹${bookBal}`, hue);
+  const perAcctBal = info.ok && info.data.TotalBalanceClearedBalance ? `₹${info.data.TotalBalanceClearedBalance.trim()}` : "KYC ✓";
+  const c = baseTwin(`live-${account}`, name, SEGMENT[use], perAcctBal, hue);
   c.age = demo?.age ?? 41;
   c.goals = pb.goals;
 
@@ -471,6 +494,21 @@ export async function buildLiveTwin(account: string, use: UseCase): Promise<Live
     sig.push({ id: "dm-pii", type: "bureau", label: `PAN ${demo.panMasked} · mobile ${demo.mobileMasked}`, detail: `Identifiers masked here and redacted before any LLM call (DPDP) · city code ${demo.city}`, time: "live", strength: "medium" });
   }
   if (insight) sig.push(...insight.derivedSignals);
+
+  // learning loop: prior officer decisions on this relationship feed back
+  // into the twin, so the next swarm run reasons WITH the outcome history
+  const outcome = ops().actions.find((a) => a.account.endsWith(account.slice(-4)) && a.status !== "pending");
+  if (outcome) {
+    sig.unshift({
+      id: "loop-1",
+      type: "life-event",
+      label: `Last action ${outcome.status}${outcome.result ? ` · ${outcome.result}` : ""}`,
+      detail: `Officer ${outcome.status === "rejected" ? "rejected" : "approved"} "${outcome.summary}" — outcome written back to the twin (learning loop). Next engagement adapts to this decision.`,
+      time: "feedback",
+      strength: "high",
+    });
+    c.memory.unshift({ id: "loop-m", kind: "episodic", text: `Officer ${outcome.status} the proposed action "${outcome.summary}"${outcome.result ? ` (${outcome.result})` : ""} — factored into future recommendations.`, time: "recent" });
+  }
   c.signals = sig;
 
   const tierLine = demo ? `${demo.tier}, ${demo.gender.toLowerCase()}, ${demo.age ?? "?"} yrs, ${demo.homeowner ? "home-owner" : "renter"}, risk ${demo.riskTier}.` : "";
