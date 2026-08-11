@@ -21,8 +21,8 @@ export async function POST(req: NextRequest) {
     summary?: string;
   };
   const action = proposeAction(
-    "OPEN_DEPOSIT_ACCOUNT",
-    summary ?? "Open deposit account for idle balance (agent-recommended)",
+    "SWEEP_TRANSFER",
+    summary ?? "Sweep idle balance — instant C2C transfer on the SBI core (agent-recommended)",
     customer ?? "Customer",
     account ?? ""
   );

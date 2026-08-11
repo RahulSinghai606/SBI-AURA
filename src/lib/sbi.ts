@@ -13,6 +13,18 @@ const BASE = process.env.SBI_API_BASE ?? "https://api.innohub.sbi";
 
 type SbiResult<T> = { ok: true; data: T; ms: number } | { ok: false; error: string; ms: number };
 
+// Per-API IH codes — each InnoHub API carries its own unique IH_CODE
+// (confirmed by SBI support, 11 Aug 2026; values from each API's spec).
+const IH_CODES: Record<string, string> = {
+  accstatementenq: "000073",
+  accountenquiryapi: "000002",
+  customerinformationenquiry: "000072",
+  customerpersonaldetailsenquiry: "000072",
+  CustomertoCustomerFundTransfer: "000150",
+  NEFTFundTransfer: "000148",
+  accountcreation: "000052",
+};
+
 async function sbiPost<T>(service: string, path: string, body: Record<string, unknown>): Promise<SbiResult<T>> {
   const t0 = Date.now();
   const s = ops();
@@ -22,7 +34,8 @@ async function sbiPost<T>(service: string, path: string, body: Record<string, un
       "X-Authorization": process.env.SBI_API_TOKEN,
       "Content-Type": "application/json",
     };
-    headers["IH_CODE"] = process.env.SBI_IH_CODE ?? "000073";
+    const ih = IH_CODES[service.split("/")[0]];
+    if (ih) headers["IH_CODE"] = ih;
     const res = await fetch(`${BASE}/${service}${path}`, {
       method: "POST",
       headers,
@@ -101,9 +114,24 @@ export function createDepositAccount() {
   return sbiPost<{ ResponseStatus: string; AccountNumber: string }>("accountcreation/v1", "/customers", {});
 }
 
-// NOTE: the C2C and NEFT fund-transfer sandbox backends currently reject their
-// own published request schemas (SI520 on every spec field — verified 10 Aug 2026),
-// so the money-movement action demos through Account Creation instead.
+// Instant same-bank fund transfer — REAL money movement on the SBI core.
+// Verified live 11 Aug 2026 with the correct per-API IH_CODE (000150):
+// returns a journal number and O.K response.
+export function c2cFundTransfer(amountPaisa = "100", narration = "AURA/NBA/SWEEP/PMT") {
+  return sbiPost<{ Responsestatus: string; JournalNumber: string; ResponseDescription: string; Date: string }>(
+    "CustomertoCustomerFundTransfer/v1",
+    "/fundTransfer",
+    {
+      BRANCH_CODE: "04266",
+      CreditAccount: "00000030095706067",
+      DebitAccount: "00000030095706056",
+      StatementNarrative: narration,
+      TransactionAmount: amountPaisa,
+    }
+  );
+}
+// (NEFT now passes schema validation with IH_CODE 000148 but the sandbox
+// product returns "APPLICATION NOT ACTIVE" — SBI-side switch, documented.)
 
 // ─────────────────────────────────────────────────────────────
 // LIVE DIGITAL TWIN — assembled at runtime, entirely from SBI core-banking

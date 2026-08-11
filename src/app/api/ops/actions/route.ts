@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ops, killGuard, getAction, logEvent } from "@/lib/ops";
-import { createDepositAccount } from "@/lib/sbi";
+import { createDepositAccount, c2cFundTransfer } from "@/lib/sbi";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -31,10 +31,37 @@ export async function POST(req: NextRequest) {
 
   action.status = "approved";
   logEvent("officer", `Action ${action.id} APPROVED (${action.type}) — executing on SBI core`, "warn");
+
+  if (action.type === "SWEEP_TRANSFER") {
+    // REAL money movement: instant C2C transfer on the SBI core.
+    // The sandbox transfer product toggles active/inactive on SBI's side —
+    // when it is off, execute the deposit-account leg instead so the approved
+    // action always lands on the core.
+    const tx = await c2cFundTransfer("100", "AURA/NBA/SWEEP/PMT");
+    if (tx.ok && tx.data.Responsestatus === "0") {
+      action.status = "executed";
+      action.result = `funds moved · journal ${tx.data.JournalNumber}`;
+      logEvent("nba-executor", `FUNDS MOVED on SBI core · C2C transfer OK · journal ${tx.data.JournalNumber} · ${tx.ms}ms`, "critical");
+      return NextResponse.json({ action });
+    }
+    logEvent("nba-executor", "C2C product inactive on sandbox — executing deposit-account leg instead", "warn");
+    const acct = await createDepositAccount();
+    if (acct.ok && acct.data.AccountNumber) {
+      action.status = "executed";
+      action.result = `deposit a/c ${acct.data.AccountNumber} (transfer product inactive)`;
+      logEvent("nba-executor", `Deposit account OPENED on SBI core · a/c ${acct.data.AccountNumber} · ${acct.ms}ms`, "critical");
+    } else {
+      action.status = "failed";
+      action.result = acct.ok ? "no account number" : acct.error;
+      logEvent("nba-executor", "Execution FAILED after approval — routed to RM queue", "warn");
+    }
+    return NextResponse.json({ action });
+  }
+
   const result = await createDepositAccount();
   if (result.ok && result.data.AccountNumber) {
     action.status = "executed";
-    action.result = result.data.AccountNumber;
+    action.result = `a/c ${result.data.AccountNumber}`;
     logEvent("nba-executor", `Deposit account OPENED on SBI core · a/c ${result.data.AccountNumber} · ${result.ms}ms`, "critical");
   } else {
     action.status = "failed";
