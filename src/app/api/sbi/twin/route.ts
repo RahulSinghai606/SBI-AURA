@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "kill-switch", message: "Agentic engagement suspended." }, { status: 423 });
   }
 
-  const twin = await buildLiveTwin("30095497360", "saver");
+  const twin = await buildLiveTwin("30095497360", "senior_premium");
   recordLatency(Date.now() - t0);
   logEvent("twin-builder", `LIVE twin assembled in ${Date.now() - t0}ms`, "info");
   return NextResponse.json(twin);

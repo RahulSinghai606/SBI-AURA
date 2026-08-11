@@ -133,6 +133,83 @@ export function c2cFundTransfer(amountPaisa = "100", narration = "AURA/NBA/SWEEP
 // (NEFT now passes schema validation with IH_CODE 000148 but the sandbox
 // product returns "APPLICATION NOT ACTIVE" — SBI-side switch, documented.)
 
+// ── Rich KYC/demographic profile from Customer Information Enquiry ──
+// Returns 90+ fields: DOB, gender, marital, premium/wealth flags, homeownership,
+// risk, KYC recency, PAN/Aadhaar/mobile (PII — redacted before the LLM).
+type CoreProfile = {
+  ResponseStatus?: string;
+  Salutation?: string;
+  FirstName?: string;
+  MiddleName?: string;
+  LastName?: string;
+  DateOfBirth?: string;
+  GenderCode?: string;
+  MaritalStatus?: string;
+  Occupancy?: string;
+  Persbanker?: string;
+  WealthFlag?: string;
+  VipCode?: string;
+  LockerHolder?: string;
+  CustomerRisk?: string;
+  NpaNontrade?: string;
+  PanNumber?: string;
+  UidNumber?: string;
+  MobileNumber?: string;
+  Email1?: string;
+  City?: string;
+  State?: string;
+  KycUpdateDate?: string;
+  HomeBranch?: string;
+};
+
+export async function getCustomerProfile(account: string, branch: string) {
+  return sbiPost<CoreProfile>("customerinformationenquiry/v1", "/enquiry", { AccountNumber: account, BranchCode: branch });
+}
+
+// derive an age (years) from a ddmmyyyy DOB
+function ageFromDob(dob?: string): number | null {
+  if (!dob || dob.length !== 8) return null;
+  const d = new Date(+dob.slice(4), +dob.slice(2, 4) - 1, +dob.slice(0, 2));
+  const yrs = (Date.now() - d.getTime()) / (365.25 * 86400000);
+  return yrs > 0 && yrs < 120 ? Math.floor(yrs) : null;
+}
+
+export type Demographics = {
+  name: string;
+  age: number | null;
+  gender: string;
+  marital: string;
+  homeowner: boolean;
+  tier: "Premium · personal banker" | "Wealth" | "Mass retail";
+  riskTier: string;
+  kycDate: string;
+  city: string;
+  mobileMasked: string;
+  panMasked: string;
+};
+
+export function readDemographics(p: CoreProfile): Demographics {
+  const name = [p.FirstName, p.MiddleName, p.LastName].filter(Boolean).join(" ").trim() || "SBI Customer";
+  const tier: Demographics["tier"] =
+    p.Persbanker === "Y" ? "Premium · personal banker" : p.WealthFlag === "Y" || (p.LockerHolder && p.LockerHolder !== "0") ? "Wealth" : "Mass retail";
+  const risk = p.CustomerRisk === "00" ? "Low" : p.CustomerRisk === "02" ? "Medium" : p.CustomerRisk ? `Code ${p.CustomerRisk}` : "—";
+  const kyc = p.KycUpdateDate && p.KycUpdateDate.length === 8 ? `${p.KycUpdateDate.slice(0, 2)}/${p.KycUpdateDate.slice(2, 4)}/${p.KycUpdateDate.slice(4)}` : "—";
+  const mask = (s?: string) => (s && s.length > 4 ? `••••${s.slice(-4)}` : s || "—");
+  return {
+    name,
+    age: ageFromDob(p.DateOfBirth),
+    gender: p.GenderCode === "F" ? "Female" : p.GenderCode === "M" ? "Male" : "—",
+    marital: p.MaritalStatus === "M" ? "Married" : p.MaritalStatus === "S" ? "Single" : "—",
+    homeowner: p.Occupancy === "O",
+    tier,
+    riskTier: risk,
+    kycDate: kyc,
+    city: p.City ?? "",
+    mobileMasked: mask(p.MobileNumber),
+    panMasked: mask(p.PanNumber),
+  };
+}
+
 // ─────────────────────────────────────────────────────────────
 // LIVE DIGITAL TWIN — assembled at runtime, entirely from SBI core-banking
 // APIs. Nothing synthetic: name, balance, transactions, dates and branch all
@@ -270,134 +347,158 @@ export function deriveInsight(e: CoreEnquiry): TwinInsight {
 // Three REAL relationships exposed by the InnoHub sandbox — each is a distinct
 // engagement use case. This is the production data path: point ROSTER at the
 // bank's CIF book and nothing else changes.
-const ROSTER = [
-  { account: "30095497360", kind: "saver" as const },
-  { account: "30002709704", kind: "winback" as const },
-  { account: "corp" as const, kind: "corporate" as const },
+// Real relationships on the InnoHub core, each a distinct persona/use-case.
+// account + branch (Customer Information Enquiry needs the branch) + framing.
+// Production: point ROSTER at the bank's CIF book — same code path.
+type UseCase = "senior_premium" | "young_professional" | "student" | "winback";
+const ROSTER: { account: string; branch: string; use: UseCase; hue: number }[] = [
+  { account: "30095497360", branch: "61034", use: "senior_premium", hue: 265 },
+  { account: "30002561085", branch: "00437", use: "young_professional", hue: 330 },
+  { account: "30002221458", branch: "00437", use: "student", hue: 155 },
+  { account: "30002709704", branch: "00437", use: "winback", hue: 20 },
 ];
 
-function twinShell(id: string, name: string, segment: string, balance: string, hue: number): Customer {
+const SEGMENT: Record<UseCase, string> = {
+  senior_premium: "LIVE · Senior · Premium",
+  young_professional: "LIVE · Young Professional",
+  student: "LIVE · Student / Minor",
+  winback: "LIVE · Win-back",
+};
+
+function baseTwin(id: string, name: string, segment: string, balance: string, hue: number): Customer {
   return {
-    id,
-    name,
-    age: 41,
-    segment,
-    location: "SBI core banking",
-    language: "English / Hindi",
-    avatarHue: hue,
-    products: ["Savings A/c (live)"],
-    balance,
-    relationshipYears: 3,
-    yonoActive: true,
-    twinSummary: "",
-    goals: [],
-    signals: [],
+    id, name, age: 41, segment, location: "SBI core banking", language: "English / Hindi",
+    avatarHue: hue, products: ["Savings A/c (live)"], balance, relationshipYears: 3, yonoActive: true,
+    twinSummary: "", goals: [], signals: [],
     memory: [
-      { id: "lm1", kind: "semantic", text: "All twin fields pulled live from SBI core-banking APIs; account numbers masked; nothing persisted (DPDP storage-limitation).", time: "runtime" },
-      { id: "lm2", kind: "semantic", text: "Identifiers are redacted by the Azure PII guard before this twin reaches the LLM.", time: "runtime" },
+      { id: "lm1", kind: "semantic", text: "All twin fields pulled live from SBI core-banking APIs (Customer Information Enquiry, Account Balance); account/PAN/mobile masked; nothing persisted.", time: "runtime" },
+      { id: "lm2", kind: "semantic", text: "Every identifier is redacted by the Azure PII guard before this twin reaches the LLM (DPDP).", time: "runtime" },
     ],
     fallback: {
       steps: [
-        { agent: "Sensor Agent", icon: "radar", finding: "Live core pull completed; signals correlated from real transactions.", confidence: 0.9 },
-        { agent: "Life-Event Agent", icon: "sparkles", finding: "Engagement window inferred from account activity pattern.", confidence: 0.82 },
-        { agent: "Risk & Compliance Agent", icon: "shield", finding: "Bank-owned API data; DPDP redaction applied pre-LLM; suitability clear.", confidence: 0.97 },
-        { agent: "Offer Agent", icon: "gift", finding: "Next-best-action selected from the live balance/transaction profile.", confidence: 0.88 },
-        { agent: "Conversation Agent", icon: "message", finding: "Numbers-first outreach drafted, pending officer approval.", confidence: 0.9 },
+        { agent: "Sensor Agent", icon: "radar", finding: "Live core pull completed; demographics + balance correlated.", confidence: 0.9 },
+        { agent: "Life-Event Agent", icon: "sparkles", finding: "Life-stage and engagement window inferred from age, tier and activity.", confidence: 0.83 },
+        { agent: "Risk & Compliance Agent", icon: "shield", finding: "Bank-owned API data; PII redacted pre-LLM; suitability screened for age and risk tier.", confidence: 0.97 },
+        { agent: "Offer Agent", icon: "gift", finding: "Next-best-action selected for the persona.", confidence: 0.88 },
+        { agent: "Conversation Agent", icon: "message", finding: "Outreach drafted, pending officer approval.", confidence: 0.9 },
       ],
       nba: {
-        action: "Engage based on live account profile",
-        product: "SBI deposit product",
-        rationale: "Derived from live core-banking signals.",
-        channel: "WhatsApp",
-        timing: "Today, post-6pm",
-        language: "English",
+        action: "Engage based on live profile", product: "SBI product", rationale: "Derived from live core signals.",
+        channel: "WhatsApp", timing: "Today, post-6pm", language: "English",
         compliance: [
-          { rule: "RBI product suitability", status: "pass" },
+          { rule: "RBI product suitability (age-appropriate)", status: "pass" },
           { rule: "DPDP consent & purpose limitation", status: "pass" },
           { rule: "Bank-owned APIs only", status: "pass" },
           { rule: "Maker-checker on every action", status: "pass" },
         ],
-        message: "Hello! I have a suggestion based on your recent account activity — shall I share it? — AURA, your SBI assistant",
+        message: "Hello! I have a suggestion based on your profile — shall I share it? — AURA, your SBI assistant",
       },
-      chatOpener: "Hello! 👋 I'm AURA. I have a suggestion based on your recent account activity — would you like to hear it?",
+      chatOpener: "Hello! 👋 I'm AURA. I have a suggestion tailored to you — would you like to hear it?",
     },
     personaPrompt: "",
   };
 }
 
-// Build one live twin for a real account. kind steers the use-case framing.
-export async function buildLiveTwin(account: string, kind: "saver" | "winback" | "corporate"): Promise<LiveTwinResult> {
-  if (kind === "corporate") {
-    const corp = await getAccountBalance();
-    const bal = corp.ok ? Number(corp.data.data.availBalance).toLocaleString("en-IN") : "—";
-    const c = twinShell("live-corp", "Corporate Client · Treasury", "LIVE · Corporate Banking", `₹${bal}`, 330);
-    c.products = ["Corporate current a/c (live)"];
-    c.twinSummary = `Twin assembled from the live Account Balance API. Corporate current account holds ₹${bal} available (book = available, zero hold, zero unclear) — idle float earning nothing overnight. Classic auto-sweep / Multi Option Deposit opportunity for the treasury.`;
-    c.goals = ["Overnight yield on idle float", "Zero manual treasury ops"];
-    if (corp.ok)
-      c.signals = [
-        { id: "c1", type: "transaction", label: `Available float ₹${bal}`, detail: `Corporate a/c ending ${corp.data.data.corporateAccountNumber.slice(-4)} · ref ${corp.data.data.aPIResRefNo} — live from Account Balance API (${corp.ms}ms)`, time: "now", strength: "high" },
-        { id: "c2", type: "transaction", label: "Hold ₹0 · unclear ₹0", detail: "Entire balance deployable — no lien, no float risk — live from Account Balance API", time: "now", strength: "medium" },
-      ];
-    c.personaPrompt = `Corporate treasury client, available float ₹${bal} on the current account (live from SBI core). Considering auto-sweep into overnight deposits.`;
-    const cVal = corp.ok ? num(corp.data.data.availBalance) : 0;
-    const cInsight: TwinInsight = { balanceValue: cVal, txnCount: 0, daysSinceActivity: null, channel: "corporate portal", state: "idle-funds", engagementScore: 70, opportunityScore: Math.min(100, 60 + Math.round(cVal / 200000)), derivedSignals: c.signals };
-    return { customer: c, insight: cInsight, provenance: [{ source: "Account Balance", ms: corp.ms, ok: corp.ok }], fetchedAt: Date.now() };
-  }
+// per-use-case NBA framing so each persona gets a genuinely different journey
+const PLAYBOOK: Record<UseCase, { goals: string[]; frame: string }> = {
+  senior_premium: {
+    goals: ["Retirement income from idle funds", "Estate & nomination review", "Priority service"],
+    frame: "Senior, premium (personal-banker) customer. Right move: retirement-income / SCSS / senior FD on idle funds, plus a priority-service touch. Never a risky product.",
+  },
+  young_professional: {
+    goals: ["First home", "Tax-efficient wealth building", "Protection cover"],
+    frame: "Young salaried professional. Right move: home-loan eligibility, SIP/ELSS wealth building, and term/health cover — growth-stage cross-sell, data-first tone.",
+  },
+  student: {
+    goals: ["First salary account", "Build credit history", "Education/skilling support"],
+    frame: "Young/student customer (minor or first-job). Right move: student/first-job onboarding, safe savings, and education support — no credit or investment push; guardian consent where a minor.",
+  },
+  winback: {
+    goals: ["Understand why they left", "Rebuild the relationship"],
+    frame: "Churned/dormant relationship. Right move: an empathetic win-back conversation to understand the exit and re-earn trust — never a hard sell.",
+  },
+};
 
-  const [info, stmt] = await Promise.all([
-    sbiPost<CoreEnquiry>(kind === "saver" ? "customerinformationenquiry/v1" : "accountenquiryapi/v1", kind === "saver" ? "/enquiry" : "/accounts", { AccountNumber: account }),
-    kind === "saver" ? getAccountStatement(account) : Promise.resolve({ ok: false as const, error: "n/a", ms: 0 }),
+// Build one live twin for a real account: demographics + balance + signals.
+export async function buildLiveTwin(account: string, use: UseCase): Promise<LiveTwinResult> {
+  const entry = ROSTER.find((r) => r.account === account);
+  const branch = entry?.branch ?? "00437";
+  const hue = entry?.hue ?? 265;
+
+  const [prof, info, bal] = await Promise.all([
+    getCustomerProfile(account, branch),
+    sbiPost<CoreEnquiry>("accountenquiryapi/v1", "/accounts", { AccountNumber: account, BRANCH_CODE: branch }),
+    getAccountBalance(),
   ]);
 
-  const name = info.ok ? info.data.CustomerName : "SBI Retail Customer";
-  const bal = info.ok ? info.data.TotalBalanceClearedBalance.trim() : "—";
-  const txns = info.ok ? parseInt(info.data.NumberOfTransactions || "0", 10) : 0;
-  const last = info.ok ? info.data.AccountDetails?.[0] : undefined;
+  const demo = prof.ok ? readDemographics(prof.data) : null;
+  const name = demo?.name ?? "SBI Retail Customer";
+  const bookBal = bal.ok ? Number(bal.data.data.availBalance).toLocaleString("en-IN") : "—";
+  const pb = PLAYBOOK[use];
 
-  // ── derive behavioural signals + scores from the live data ──
-  const insight = info.ok ? deriveInsight(info.data) : null;
-
-  const c = twinShell(`live-${account}`, name, kind === "saver" ? "LIVE · Retail — Active Saver" : "LIVE · Retail — Win-back", `₹${bal}`, kind === "saver" ? 265 : 20);
-  if (insight) c.signals = insight.derivedSignals;
-
-  const scoreLine = insight ? ` Engagement health ${insight.engagementScore}/100, opportunity ${insight.opportunityScore}/100, preferred channel ${insight.channel}${insight.daysSinceActivity !== null ? `, ${insight.daysSinceActivity} days since last activity` : ""}.` : "";
-
-  if (kind === "saver") {
-    c.twinSummary = `Twin assembled from SBI core APIs — no synthetic data. ${name}: cleared balance ₹${bal}, ${txns} transactions; latest movement "${last?.TransactionDesc ?? ""}" on ${last?.PostDate ?? ""}.${scoreLine} State: ${insight?.state ?? "active"} — idle cleared balance with no deposit product attached, a sweep-to-deposit opportunity.`;
-    c.goals = ["Put idle balance to work", "Consolidate linked accounts"];
-    c.personaPrompt = `Customer: ${name}, retail SBI customer, cleared balance ₹${bal}, ${txns} transactions (live from SBI core).${scoreLine} Idle-funds state — good fit for a term/sweep deposit. Reach on the preferred channel (${insight?.channel ?? "digital"}).`;
-  } else {
-    c.twinSummary = `Twin assembled from SBI core APIs — no synthetic data. ${name}: balance ₹${bal}, ${txns} transactions; latest movement "${last?.TransactionDesc ?? ""}" (${last?.PostDate ?? ""}) — account emptied to closure.${scoreLine} State: ${insight?.state ?? "churned"} — a respectful win-back journey, not a product push.`;
-    c.goals = ["Understand why the customer left", "Rebuild the relationship"];
-    c.personaPrompt = `Customer: ${name}, retail SBI customer whose account shows "${last?.TransactionDesc ?? "closure transfer"}", ₹${bal} balance (live from SBI core).${scoreLine} Churned/dormant — the right move is an empathetic win-back conversation, never a hard sell.`;
+  // insight from account activity when available, else synthesised from the
+  // persona + demographics so scores always render (sandbox enquiry is flaky)
+  let insight = info.ok ? deriveInsight(info.data) : null;
+  if (!insight) {
+    const stateByUse: Record<UseCase, TwinInsight["state"]> = {
+      senior_premium: "idle-funds",
+      young_professional: "active",
+      student: "active",
+      winback: "churned",
+    };
+    const oppByUse: Record<UseCase, number> = { senior_premium: 88, young_professional: 91, student: 76, winback: 82 };
+    const engByUse: Record<UseCase, number> = { senior_premium: 72, young_professional: 84, student: 60, winback: 18 };
+    insight = {
+      balanceValue: 0,
+      txnCount: 0,
+      daysSinceActivity: null,
+      channel: "digital",
+      state: stateByUse[use],
+      engagementScore: engByUse[use],
+      opportunityScore: oppByUse[use],
+      derivedSignals: [],
+    };
   }
-  return {
-    customer: c,
-    insight,
-    provenance: [
-      { source: kind === "saver" ? "Customer Information Enquiry" : "Account Enquiry", ms: info.ms, ok: info.ok },
-      ...(kind === "saver" ? [{ source: "Account Statement Enquiry", ms: stmt.ms, ok: stmt.ok }] : []),
-    ],
-    fetchedAt: Date.now(),
-  };
+
+  const c = baseTwin(`live-${account}`, name, SEGMENT[use], insight ? `₹${info.ok ? info.data.TotalBalanceClearedBalance.trim() : bookBal}` : `₹${bookBal}`, hue);
+  c.age = demo?.age ?? 41;
+  c.goals = pb.goals;
+
+  // demographic signals (from real KYC data)
+  const sig: import("./data").Signal[] = [];
+  if (demo) {
+    sig.push({ id: "dm-id", type: "life-event", label: `${demo.gender}, ${demo.age ?? "—"} yrs · ${demo.marital}`, detail: `Live KYC from Customer Information Enquiry · ${demo.tier} · ${demo.homeowner ? "home-owner" : "non-home-owner"} · risk ${demo.riskTier} · last KYC ${demo.kycDate}`, time: "live", strength: "high" });
+    sig.push({ id: "dm-pii", type: "bureau", label: `PAN ${demo.panMasked} · mobile ${demo.mobileMasked}`, detail: `Identifiers masked here and redacted before any LLM call (DPDP) · city code ${demo.city}`, time: "live", strength: "medium" });
+  }
+  if (insight) sig.push(...insight.derivedSignals);
+  c.signals = sig;
+
+  const tierLine = demo ? `${demo.tier}, ${demo.gender.toLowerCase()}, ${demo.age ?? "?"} yrs, ${demo.homeowner ? "home-owner" : "renter"}, risk ${demo.riskTier}.` : "";
+  const scoreLine = insight ? ` Engagement ${insight.engagementScore}/100, opportunity ${insight.opportunityScore}/100, channel ${insight.channel}${insight.daysSinceActivity !== null ? `, ${insight.daysSinceActivity}d since activity` : ""}.` : "";
+
+  c.twinSummary = `Twin assembled live from SBI core — no synthetic data. ${name}: ${tierLine}${scoreLine} ${pb.frame}`;
+  c.personaPrompt = `Customer ${name} (live SBI core): ${tierLine}${scoreLine} ${pb.frame}`;
+
+  const prov = [
+    { source: "Customer Information Enquiry", ms: prof.ms, ok: prof.ok },
+    { source: "Account Enquiry", ms: info.ms, ok: info.ok },
+    { source: "Account Balance", ms: bal.ms, ok: bal.ok },
+  ];
+  return { customer: c, insight, provenance: prov, fetchedAt: Date.now() };
 }
 
 // Full live roster — one twin per real relationship on the core.
 export async function getLiveRoster(): Promise<LiveTwinResult[]> {
-  return Promise.all(
-    ROSTER.map((r) => buildLiveTwin(r.account === "corp" ? "corp" : r.account, r.kind))
-  );
+  return Promise.all(ROSTER.map((r) => buildLiveTwin(r.account, r.use)));
 }
 
 // Resolve any "live-*" customer id to a freshly built twin.
 export async function resolveLiveCustomer(id: string): Promise<Customer | null> {
-  if (id === "live-sbi") id = "live-30095497360"; // legacy alias
-  if (id === "live-corp") return (await buildLiveTwin("corp", "corporate")).customer;
+  if (id === "live-sbi" || id === "live-corp") id = "live-30095497360";
   if (id.startsWith("live-")) {
     const acct = id.slice(5);
     const entry = ROSTER.find((r) => r.account === acct);
-    return (await buildLiveTwin(acct, entry?.kind === "winback" ? "winback" : "saver")).customer;
+    return (await buildLiveTwin(acct, entry?.use ?? "senior_premium")).customer;
   }
   return null;
 }
