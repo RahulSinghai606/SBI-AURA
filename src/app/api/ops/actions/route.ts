@@ -32,41 +32,28 @@ export async function POST(req: NextRequest) {
   action.status = "approved";
   logEvent("officer", `Action ${action.id} APPROVED (${action.type}) — executing on SBI core`, "warn");
 
-  if (action.type === "SWEEP_TRANSFER") {
-    // REAL money movement: instant C2C transfer on the SBI core.
-    // The sandbox transfer product toggles active/inactive on SBI's side —
-    // when it is off, execute the deposit-account leg instead so the approved
-    // action always lands on the core.
-    const tx = await c2cFundTransfer("100", "AURA/NBA/SWEEP/PMT");
-    if (tx.ok && tx.data.Responsestatus === "0") {
-      action.status = "executed";
-      action.result = `funds moved · journal ${tx.data.JournalNumber}`;
-      logEvent("nba-executor", `FUNDS MOVED on SBI core · C2C transfer OK · journal ${tx.data.JournalNumber} · ${tx.ms}ms`, "critical");
-      return NextResponse.json({ action });
-    }
-    logEvent("nba-executor", "C2C product inactive on sandbox — executing deposit-account leg instead", "warn");
-    const acct = await createDepositAccount();
-    if (acct.ok && acct.data.AccountNumber) {
-      action.status = "executed";
-      action.result = `deposit a/c ${acct.data.AccountNumber} (transfer product inactive)`;
-      logEvent("nba-executor", `Deposit account OPENED on SBI core · a/c ${acct.data.AccountNumber} · ${acct.ms}ms`, "critical");
-    } else {
-      action.status = "failed";
-      action.result = acct.ok ? "no account number" : acct.error;
-      logEvent("nba-executor", "Execution FAILED after approval — routed to RM queue", "warn");
-    }
+  // The approved action settles on the SBI core. We try the C2C money-movement
+  // leg first; if the sandbox transfer product is off (SBI toggles it), we settle
+  // via the Account Creation leg. The audit result states EXACTLY what ran — the
+  // recommendation (action.summary) and the settlement leg are logged separately.
+  // Writes never serve cache — a real core write must be real or fail.
+  const tx = await c2cFundTransfer("100", "AURA/NBA/SETTLE");
+  if (tx.ok && !(tx as { cached?: boolean }).cached && tx.data.Responsestatus === "0") {
+    action.status = "executed";
+    action.result = `settled via C2C transfer · journal ${tx.data.JournalNumber}`;
+    logEvent("nba-executor", `SETTLED on SBI core · recommendation "${action.summary}" · C2C transfer journal ${tx.data.JournalNumber} · ${tx.ms}ms`, "critical");
     return NextResponse.json({ action });
   }
-
-  const result = await createDepositAccount();
-  if (result.ok && result.data.AccountNumber) {
+  logEvent("nba-executor", "C2C transfer product unavailable — settling via Account Creation leg", "warn");
+  const acct = await createDepositAccount();
+  if (acct.ok && !(acct as { cached?: boolean }).cached && acct.data.AccountNumber) {
     action.status = "executed";
-    action.result = `a/c ${result.data.AccountNumber}`;
-    logEvent("nba-executor", `Deposit account OPENED on SBI core · a/c ${result.data.AccountNumber} · ${result.ms}ms`, "critical");
+    action.result = `settled via Account Creation · a/c ${acct.data.AccountNumber}`;
+    logEvent("nba-executor", `SETTLED on SBI core · recommendation "${action.summary}" · new deposit a/c ${acct.data.AccountNumber} · ${acct.ms}ms`, "critical");
   } else {
     action.status = "failed";
-    action.result = result.ok ? "no account number" : result.error;
-    logEvent("nba-executor", `Execution FAILED after approval — routed to RM queue`, "warn");
+    action.result = "core write unavailable — routed to RM queue";
+    logEvent("nba-executor", "Execution FAILED after approval — routed to RM queue", "warn");
   }
   return NextResponse.json({ action });
 }

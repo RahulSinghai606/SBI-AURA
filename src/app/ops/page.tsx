@@ -350,7 +350,7 @@ export default function OpsConsole() {
             {[
               { k: "Source", v: "Bank-owned APIs only" },
               { k: "Identifiers", v: "Masked · last 4 digits" },
-              { k: "Retention", v: "None — twin built per request" },
+              { k: "Persistence", v: "No durable store · in-memory only" },
             ].map((x) => (
               <div key={x.k} className={`rounded-xl p-2.5 border text-center ${engaged ? "bg-white/5 border-red-900/30" : "bg-bg border-line"}`}>
                 <p className={`text-[9px] uppercase tracking-wide ${engaged ? "text-red-400/70" : "text-ink-faint"}`}>{x.k}</p>
@@ -449,21 +449,22 @@ export default function OpsConsole() {
                 })}
               </div>
 
-              {/* VAPT + automated testing */}
-              <p className={`text-[10px] font-bold tracking-[0.2em] uppercase mt-4 mb-2 ${engaged ? "text-red-400" : "text-ink-faint"}`}>Automated security testing · VAPT cycle</p>
+              {/* VAPT + automated testing — production roadmap, honestly labelled */}
+              <p className={`text-[10px] font-bold tracking-[0.2em] uppercase mt-4 mb-2 ${engaged ? "text-red-400" : "text-ink-faint"}`}>Security testing · production roadmap</p>
               <div className="grid grid-cols-2 gap-2">
                 {[
-                  { k: "SAST on every commit", v: "CodeQL · 0 criticals" },
-                  { k: "Dependency audit", v: "npm audit · CI-gated" },
-                  { k: "DAST (staging)", v: "OWASP ZAP · weekly" },
-                  { k: "External VAPT", v: "CERT-In empanelled · half-yearly" },
+                  { k: "SAST on every commit", v: "CodeQL — planned" },
+                  { k: "Dependency audit", v: "npm audit — CI-gated" },
+                  { k: "DAST (staging)", v: "OWASP ZAP — planned" },
+                  { k: "External VAPT", v: "CERT-In — pre-prod gate" },
                 ].map((x) => (
                   <div key={x.k} className={`rounded-xl p-3 border ${engaged ? "bg-white/5 border-red-900/30" : "bg-bg border-line"}`}>
                     <p className={`text-[11px] font-bold ${engaged ? "text-red-100" : "text-navy"}`}>{x.k}</p>
-                    <p className="text-[10px] text-teal font-semibold mt-0.5">✓ {x.v}</p>
+                    <p className={`text-[10px] font-semibold mt-0.5 ${engaged ? "text-red-300/70" : "text-ink-faint"}`}>◦ {x.v}</p>
                   </div>
                 ))}
               </div>
+              <p className={`text-[9px] mt-1.5 ${engaged ? "text-red-300/50" : "text-ink-faint"}`}>Roadmap gates for production deployment — not yet run on this prototype.</p>
             </div>
 
             {/* DPDP live redaction */}
@@ -527,7 +528,7 @@ export default function OpsConsole() {
                 </motion.div>
               )}
               <p className={`mt-2 text-[10px] leading-relaxed ${engaged ? "text-red-300/60" : "text-ink-faint"}`}>
-                Every twin snapshot passes the DPDP guard before any model call. SBI data flows over the bank&apos;s own InnoHub APIs. Keys live server-side only; TLS 1.3 in transit; AES-256 at rest.
+                Every twin snapshot passes the DPDP guard before any model call. SBI data flows over the bank&apos;s own InnoHub APIs. Keys live server-side only; TLS in transit. No durable datastore in this prototype — twins are built per request and held in memory only (AES-256 at rest applies to the production architecture).
               </p>
             </div>
           </div>

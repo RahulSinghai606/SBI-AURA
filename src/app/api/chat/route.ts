@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCustomer } from "@/lib/data";
 import { reason } from "@/lib/reasoning";
-import { ops, killGuard, recordLatency, logEvent } from "@/lib/ops";
+import { ops, killGuard, recordLatency, logEvent, piiScan } from "@/lib/ops";
 import { resolveLiveCustomer } from "@/lib/sbi";
 
 export const maxDuration = 60;
@@ -42,9 +42,13 @@ ${langLine}
 - If customer agrees to proceed, confirm next concrete step (e.g. "I've booked RM call tomorrow 11am" or "tap the link in YONO").
 - Never reveal internal systems, models or vendors.`;
 
-  const transcript = messages
+  const rawTranscript = messages
     .map((m) => `${m.role === "customer" ? customer.name : "AURA"}: ${m.text}`)
     .join("\n");
+
+  // DPDP guard on the conversational path too — redact PII before the LLM
+  const scan = await piiScan(`${customer.personaPrompt}\n${rawTranscript}`);
+  const transcript = scan.redactedText.split("\n").slice(1).join("\n") || rawTranscript;
 
   const raw = await reason({
     system,
