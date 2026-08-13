@@ -8,10 +8,17 @@
 // ─────────────────────────────────────────────────────────────
 
 import { ops, logEvent, recordDataPull } from "./ops";
+import { mockFor } from "./sbi-mock";
 
 const BASE = process.env.SBI_API_BASE ?? "https://api.innohub.sbi";
 
-type SbiResult<T> = { ok: true; data: T; ms: number; cached?: boolean } | { ok: false; error: string; ms: number };
+// SBI_MODE: "live" (sandbox only) · "mock" (schema mock only) · "auto" (default:
+// try live, fall back to last-good cache, then to the schema mock). Per SBI
+// guidance the InnoHub endpoints are still being enabled, so "auto"/"mock" keep
+// development and the demo unblocked without any code change to go live.
+const MODE = (process.env.SBI_MODE ?? "auto").toLowerCase();
+
+type SbiResult<T> = { ok: true; data: T; ms: number; cached?: boolean; mock?: boolean } | { ok: false; error: string; ms: number };
 
 // Per-API IH codes — each InnoHub API carries its own unique IH_CODE
 // (confirmed by SBI support, 11 Aug 2026; values from each API's spec).
@@ -36,16 +43,41 @@ async function sbiPost<T>(service: string, path: string, body: Record<string, un
   const t0 = Date.now();
   const s = ops();
   const cacheKey = `${service}${path}::${JSON.stringify(body.AccountNumber ?? body.corporateAccountNumber ?? path)}`;
-  if (!process.env.SBI_API_TOKEN) return { ok: false, error: "SBI_API_TOKEN not configured", ms: 0 };
 
+  // Serve the schema-faithful mock (per SBI guidance while endpoints are enabled).
+  const serveMock = (): SbiResult<T> | null => {
+    const mk = mockFor(service, body);
+    if (mk == null) return null;
+    const acct = String(body.AccountNumber ?? body.corporateAccountNumber ?? "");
+    recordDataPull(service.split("/")[0], acct, Object.keys(mk as object).length, Date.now() - t0);
+    return { ok: true, data: mk as T, ms: Date.now() - t0, mock: true };
+  };
+
+  // Fallback chain when live is unavailable: last-good cache → schema mock.
   const serveCache = (err: string): SbiResult<T> => {
     const hit = lastGood.get(cacheKey);
     if (hit) {
       logEvent("sbi-api", `${service} unavailable (${err.slice(0, 40)}) → serving last-good response`, "warn");
       return { ok: true, data: hit.data as T, ms: Date.now() - t0, cached: true };
     }
+    const mk = serveMock();
+    if (mk) {
+      logEvent("sbi-api", `${service} unavailable (${err.slice(0, 40)}) → schema mock (SBI endpoints pending)`, "warn");
+      return mk;
+    }
     return { ok: false, error: err, ms: Date.now() - t0 };
   };
+
+  // Mock-only mode, or no token configured → serve the schema mock straight away.
+  if (MODE === "mock" || !process.env.SBI_API_TOKEN) {
+    const mk = serveMock();
+    if (mk) {
+      s.counters.sbiApiCalls++;
+      logEvent("sbi-api", `${service} served from schema mock (SBI_MODE=${MODE})`, "info");
+      return mk;
+    }
+    if (!process.env.SBI_API_TOKEN) return { ok: false, error: "SBI_API_TOKEN not configured", ms: 0 };
+  }
 
   try {
     const headers: Record<string, string> = {
@@ -280,7 +312,7 @@ type CoreEnquiry = {
 
 export type LiveTwinResult = {
   customer: Customer;
-  provenance: { source: string; ms: number; ok: boolean; cached?: boolean }[];
+  provenance: { source: string; ms: number; ok: boolean; cached?: boolean; mock?: boolean }[];
   insight: TwinInsight | null;
   fetchedAt: number;
 };
@@ -397,10 +429,10 @@ const ROSTER: { account: string; branch: string; use: UseCase; hue: number }[] =
 ];
 
 const SEGMENT: Record<UseCase, string> = {
-  senior_premium: "LIVE · Senior · Premium",
-  young_professional: "LIVE · Young Professional",
-  student: "LIVE · Student / Minor",
-  winback: "LIVE · Win-back",
+  senior_premium: "Senior · Premium",
+  young_professional: "Young Professional",
+  student: "Student / Minor",
+  winback: "Win-back",
 };
 
 function baseTwin(id: string, name: string, segment: string, balance: string, hue: number): Customer {
@@ -471,6 +503,11 @@ export async function buildLiveTwin(account: string, use: UseCase): Promise<Live
 
   const demo = prof.ok ? readDemographics(prof.data) : null;
   const kycCached = prof.ok && prof.cached === true; // served from last-known-good
+  const kycMock = prof.ok && (prof as { mock?: boolean }).mock === true; // schema mock
+  // Overall data source for this twin — honest badge on the roster/provenance.
+  const anyMock = kycMock || (info.ok && (info as { mock?: boolean }).mock === true);
+  const anyCached = kycCached || (info.ok && (info as { cached?: boolean }).cached === true);
+  const srcTag = anyMock ? "MOCK" : anyCached ? "CACHED" : "LIVE";
   const name = demo?.name ?? "SBI Retail Customer";
   const bookBal = bal.ok ? Number(bal.data.data.availBalance).toLocaleString("en-IN") : "—";
   const pb = PLAYBOOK[use];
@@ -500,14 +537,14 @@ export async function buildLiveTwin(account: string, use: UseCase): Promise<Live
   }
 
   const perAcctBal = info.ok && info.data.TotalBalanceClearedBalance ? `₹${info.data.TotalBalanceClearedBalance.trim()}` : "KYC ✓";
-  const c = baseTwin(`live-${account}`, name, SEGMENT[use], perAcctBal, hue);
+  const c = baseTwin(`live-${account}`, name, `${srcTag} · ${SEGMENT[use]}`, perAcctBal, hue);
   c.age = demo?.age ?? 41;
   c.goals = pb.goals;
 
   // demographic signals (from real KYC data)
   const sig: import("./data").Signal[] = [];
   if (demo) {
-    sig.push({ id: "dm-id", type: "life-event", label: `${demo.gender}, ${demo.age ?? "—"} yrs · ${demo.marital}`, detail: `${kycCached ? "KYC from last-known-good (live CBS timed out, auto-refreshes)" : "Live KYC from Customer Information Enquiry"} · ${demo.tier} · ${demo.homeowner ? "home-owner" : "non-home-owner"} · risk ${demo.riskTier} · last KYC ${demo.kycDate}`, time: kycCached ? "cached" : "live", strength: "high" });
+    sig.push({ id: "dm-id", type: "life-event", label: `${demo.gender}, ${demo.age ?? "—"} yrs · ${demo.marital}`, detail: `${kycMock ? "KYC from schema mock (SBI endpoints being enabled — per SBI guidance)" : kycCached ? "KYC from last-known-good (live CBS timed out, auto-refreshes)" : "Live KYC from Customer Information Enquiry"} · ${demo.tier} · ${demo.homeowner ? "home-owner" : "non-home-owner"} · risk ${demo.riskTier} · last KYC ${demo.kycDate}`, time: kycMock ? "mock" : kycCached ? "cached" : "live", strength: "high" });
     sig.push({ id: "dm-pii", type: "bureau", label: `PAN ${demo.panMasked} · mobile ${demo.mobileMasked}`, detail: `Identifiers masked here and redacted before any LLM call (DPDP) · city code ${demo.city}`, time: "live", strength: "medium" });
   }
   if (insight) sig.push(...insight.derivedSignals);
@@ -535,9 +572,9 @@ export async function buildLiveTwin(account: string, use: UseCase): Promise<Live
   c.personaPrompt = `Customer ${name} (live SBI core): ${tierLine}${scoreLine} ${pb.frame}`;
 
   const prov = [
-    { source: "Customer Information Enquiry", ms: prof.ms, ok: prof.ok, cached: kycCached },
-    { source: "Account Enquiry", ms: info.ms, ok: info.ok, cached: info.ok && (info as { cached?: boolean }).cached === true },
-    { source: "Account Balance", ms: bal.ms, ok: bal.ok, cached: bal.ok && (bal as { cached?: boolean }).cached === true },
+    { source: "Customer Information Enquiry", ms: prof.ms, ok: prof.ok, cached: kycCached, mock: kycMock },
+    { source: "Account Enquiry", ms: info.ms, ok: info.ok, cached: info.ok && (info as { cached?: boolean }).cached === true, mock: info.ok && (info as { mock?: boolean }).mock === true },
+    { source: "Account Balance", ms: bal.ms, ok: bal.ok, cached: bal.ok && (bal as { cached?: boolean }).cached === true, mock: bal.ok && (bal as { mock?: boolean }).mock === true },
   ];
   return { customer: c, insight, provenance: prov, fetchedAt: Date.now() };
 }
