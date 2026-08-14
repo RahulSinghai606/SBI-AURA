@@ -469,6 +469,36 @@ function baseTwin(id: string, name: string, segment: string, balance: string, hu
   };
 }
 
+// Per-persona relationship memory — the twin's episodic/semantic history.
+// Templated per use-case, then enriched at runtime with the account's actual
+// activity (last transaction, channel, recency) so no two twins read alike.
+const MEMORY_BOOK: Record<UseCase, { id: string; kind: "episodic" | "semantic"; text: string; time: string }[]> = {
+  senior_premium: [
+    { id: "sp1", kind: "episodic", text: "May 2026 — visited home branch to update nomination on the savings account; asked the PB about senior-citizen FD rates while there.", time: "May 2026" },
+    { id: "sp2", kind: "episodic", text: "Feb 2026 — declined a credit-card upsell politely but asked detailed questions about Senior Citizen Savings Scheme limits.", time: "Feb 2026" },
+    { id: "sp3", kind: "semantic", text: "Prefers branch + phone over app. Trusts the personal banker relationship; responds to respectful, unhurried conversations — never pressure.", time: "learned" },
+    { id: "sp4", kind: "semantic", text: "Financial style: capital protection first. Pension credit is the anchor inflow; large idle balances signal an income-generation conversation, not a risk product.", time: "learned" },
+  ],
+  young_professional: [
+    { id: "yp1", kind: "episodic", text: "Jun 2026 — checked home-loan EMI calculator in YONO three times in one week; abandoned at the document-upload step.", time: "Jun 2026" },
+    { id: "yp2", kind: "episodic", text: "Apr 2026 — raised the monthly ELSS SIP after a salary revision; asked support whether ELSS lock-in affects goal planning.", time: "Apr 2026" },
+    { id: "yp3", kind: "semantic", text: "Digital-first: UPI daily, YONO weekly, never visits a branch. Reads messages after 7pm; responds to numbers and comparisons, ignores generic offers.", time: "learned" },
+    { id: "yp4", kind: "semantic", text: "Life-stage: early wealth-building with a first-home goal. Salary credit is stable; disposable surplus goes to SIPs.", time: "learned" },
+  ],
+  student: [
+    { id: "st1", kind: "episodic", text: "Jul 2026 — scholarship DBT credit landed; searched YONO for 'education loan' the same evening.", time: "Jul 2026" },
+    { id: "st2", kind: "episodic", text: "Mar 2026 — asked at the branch (with parent) how to keep the account active after moving cities for college.", time: "Mar 2026" },
+    { id: "st3", kind: "semantic", text: "Mobile-only user, small UPI transactions. Guardian involved in decisions — RBI minor-account rules apply; no credit or investment products.", time: "learned" },
+    { id: "st4", kind: "semantic", text: "Relationship goal: grow with the customer — education support now becomes the first salary account later.", time: "learned" },
+  ],
+  winback: [
+    { id: "wb1", kind: "episodic", text: "Jun 2025 — moved the bulk of the balance out via IMPS to another bank; no inbound activity since.", time: "Jun 2025" },
+    { id: "wb2", kind: "episodic", text: "May 2025 — support ticket about a debit-card annual fee closed as 'resolved' but customer never transacted again — likely the exit trigger.", time: "May 2025" },
+    { id: "wb3", kind: "semantic", text: "Win-back rule learned from history: this customer responds to acknowledgement of the past issue, not to offers. Lead with the fee reversal, not a product.", time: "learned" },
+    { id: "wb4", kind: "semantic", text: "Account kept alive with a token balance — the door is open. A single positive interaction can reactivate; a sales pitch will close it.", time: "learned" },
+  ],
+};
+
 // per-use-case NBA framing so each persona gets a genuinely different journey
 const PLAYBOOK: Record<UseCase, { goals: string[]; frame: string }> = {
   senior_premium: {
@@ -540,6 +570,34 @@ export async function buildLiveTwin(account: string, use: UseCase): Promise<Live
   const c = baseTwin(`live-${account}`, name, `${srcTag} · ${SEGMENT[use]}`, perAcctBal, hue);
   c.age = demo?.age ?? 41;
   c.goals = pb.goals;
+
+  // ── Twin memory: persona history + runtime facts from this very data pull ──
+  const runtimeMemory: Customer["memory"] = [];
+  if (insight) {
+    const last = info.ok ? info.data.AccountDetails?.[0] : undefined;
+    if (last)
+      runtimeMemory.push({
+        id: "rt-txn", kind: "episodic",
+        text: `Latest core posting: ${last.TransactionDesc?.trim() || "movement"} of ₹${last.TransactionAmount?.trim()} on ${last.PostDate} (journal ${last.JournalNumber}) — the twin reasons from this, not from a stale profile.`,
+        time: last.PostDate,
+      });
+    runtimeMemory.push({
+      id: "rt-behave", kind: "semantic",
+      text: `Observed behaviour: preferred channel ${insight.channel}; ${insight.daysSinceActivity !== null ? `${insight.daysSinceActivity} days since last activity; ` : ""}relationship state "${insight.state}" · engagement ${insight.engagementScore}/100 · opportunity ${insight.opportunityScore}/100.`,
+      time: "computed now",
+    });
+  }
+  if (demo)
+    runtimeMemory.push({
+      id: "rt-kyc", kind: "semantic",
+      text: `KYC picture: ${demo.tier}, ${demo.gender.toLowerCase()}${demo.age ? `, ${demo.age} yrs` : ""}, ${demo.marital.toLowerCase()}, ${demo.homeowner ? "home-owner" : "non-home-owner"}, risk ${demo.riskTier}, last refreshed ${demo.kycDate}.`,
+      time: kycMock ? "schema mock" : kycCached ? "cached" : "live",
+    });
+  c.memory = [
+    ...runtimeMemory,
+    ...MEMORY_BOOK[use],
+    { id: "gov-dpdp", kind: "semantic", text: "Governance: identifiers masked here and redacted by the Azure PII guard before any LLM call (DPDP); nothing persisted beyond the session.", time: "always" },
+  ];
 
   // demographic signals (from real KYC data)
   const sig: import("./data").Signal[] = [];
