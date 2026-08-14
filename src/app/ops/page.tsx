@@ -36,6 +36,7 @@ import {
 type Metrics = {
   killSwitch: { engaged: boolean; by: string; at: number | null; reason: string };
   counters: Record<string, number>;
+  kpi?: { opportunitiesProposed: number; officerApprovalRate: number | null; leadsFiled: number; standingInstructions: number; consentVerified: number; pendingReview: number };
   p50: number;
   p95: number;
   p99: number;
@@ -270,6 +271,24 @@ export default function OpsConsole() {
               <div key={t.label} className={`rounded-2xl px-3 py-3 border text-center ${engaged ? "bg-white/5 border-red-900/40" : "bg-bg border-line"}`}>
                 <t.Icon className={`w-4 h-4 mx-auto mb-1 ${engaged ? "text-red-300" : "text-cyan"}`} />
                 <p className={`font-display text-xl font-semibold ${engaged ? "text-red-100" : "text-navy"}`}>{t.v}</p>
+                <p className={`text-[9px] uppercase tracking-wide ${engaged ? "text-red-400/70" : "text-ink-faint"}`}>{t.label}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* business KPIs — outcomes, not plumbing */}
+          <p className={`text-[10px] font-bold tracking-[0.2em] uppercase mb-2 ${engaged ? "text-red-400" : "text-ink-faint"}`}>Business outcomes — engagement funnel</p>
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 mb-5">
+            {[
+              { label: "Opportunities", v: m?.kpi?.opportunitiesProposed ?? 0 },
+              { label: "Consents ✓", v: m?.kpi?.consentVerified ?? 0 },
+              { label: "Approval rate", v: m?.kpi?.officerApprovalRate != null ? `${m.kpi.officerApprovalRate}%` : "—" },
+              { label: "Leads filed", v: m?.kpi?.leadsFiled ?? 0 },
+              { label: "Standing instr.", v: m?.kpi?.standingInstructions ?? 0 },
+              { label: "Pending review", v: m?.kpi?.pendingReview ?? 0 },
+            ].map((t) => (
+              <div key={t.label} className={`rounded-2xl px-3 py-3 border text-center ${engaged ? "bg-white/5 border-red-900/40" : "bg-teal/5 border-teal/30"}`}>
+                <p className={`font-display text-xl font-semibold ${engaged ? "text-red-100" : "text-teal"}`}>{t.v}</p>
                 <p className={`text-[9px] uppercase tracking-wide ${engaged ? "text-red-400/70" : "text-ink-faint"}`}>{t.label}</p>
               </div>
             ))}

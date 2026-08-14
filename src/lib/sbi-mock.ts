@@ -112,7 +112,113 @@ export function mockFor(service: string, body: Record<string, unknown>): unknown
     case "accountcreation":
       return { ResponseStatus: "0", AccountNumber: `3009${String(Date.now()).slice(-9)}` };
 
+    // ── CIF-360: every account/loan/card linked to the customer ──
+    case "cifassociatedaccountenquiry": {
+      const P = PORTFOLIO[acct] ?? PORTFOLIO["30095497360"];
+      return { ResponseStatus: "0", CIFNumber: P.cif, Accounts: P.accounts };
+    }
+
+    // Authoritative account status from the core (we no longer only infer)
+    case "accountstatusenquiry": {
+      const st: Record<string, { s: string; k: string }> = {
+        "30095497360": { s: "ACTIVE", k: "KYC COMPLIANT" },
+        "30002561085": { s: "ACTIVE", k: "KYC COMPLIANT" },
+        "30002221458": { s: "ACTIVE", k: "KYC COMPLIANT" },
+        "30002709704": { s: "DORMANT", k: "KYC DUE" },
+      };
+      const v = st[acct] ?? st["30095497360"];
+      return { ResponseStatus: "0", AccountNumber: acct, AccountStatus: v.s, KYCStatus: v.k, InactiveSince: v.s === "DORMANT" ? "22/06/25" : "" };
+    }
+
+    case "monthlyaveragebalance": {
+      const mab: Record<string, string[]> = {
+        "30095497360": ["812400", "798100", "842156"],
+        "30002561085": ["48900", "52300", "56780"],
+        "30002221458": ["6100", "7800", "8450"],
+        "30002709704": ["150", "150", "150"],
+      };
+      const v = mab[acct] ?? mab["30095497360"];
+      return { ResponseStatus: "0", AccountNumber: acct, MAB: [{ Month: "May26", Amount: v[0] }, { Month: "Jun26", Amount: v[1] }, { Month: "Jul26", Amount: v[2] }] };
+    }
+
+    // ── Compliance pre-screen suite ──
+    case "amlriskenquiry":
+      return { ResponseStatus: "0", AccountNumber: acct, AMLRiskCategory: acct === "30002561085" ? "MEDIUM" : "LOW", LastReviewDate: "14/03/26" };
+    case "cifnamescreening":
+      return { ResponseStatus: "0", ScreeningResult: "NO MATCH", Lists: ["UNSC", "OFAC", "RBI CAUTION"], ScreenedAt: ago(0) };
+    case "npastatusdetails":
+      return { ResponseStatus: "0", AccountNumber: acct, NPAStatus: "STANDARD", IRACCode: "1" };
+
+    // ── Persona plays ──
+    case "lifecertificateenquiry":
+      // Senior pensioner: certificate window approaching — the proactive-service moment
+      return acct === "30095497360"
+        ? { ResponseStatus: "0", PensionAccount: acct, CertificateStatus: "DUE", DueDate: "30/11/26", LastSubmitted: "18/11/25", Mode: "JEEVAN PRAMAAN / BRANCH" }
+        : { ResponseStatus: "0", PensionAccount: acct, CertificateStatus: "NOT APPLICABLE" };
+    case "pensionslipenquiry":
+      return { ResponseStatus: "0", PensionAccount: acct, Month: "Jul26", BasicPension: "42600", DearnessRelief: "5600", NetCredit: "48200", PPONumber: "PPO/DEF/48-2211" };
+    case "nomineesenquiry": {
+      const hasNominee = acct === "30002561085"; // everyone else has a gap → protection conversation
+      return hasNominee
+        ? { ResponseStatus: "0", AccountNumber: acct, Nominees: [{ Name: "P JAIN", Relation: "FATHER", Share: "100" }] }
+        : { ResponseStatus: "0", AccountNumber: acct, Nominees: [] };
+    }
+    case "educationloanenquiry":
+      return acct === "30002221458"
+        ? { ResponseStatus: "0", Eligible: "Y", Schemes: ["SBI Student Loan", "SBI Scholar Loan (IIT/NIT)"], MaxAmount: "1500000" }
+        : { ResponseStatus: "0", Eligible: "N", Schemes: [] };
+    case "homeloanintcertificate":
+      return { ResponseStatus: "0", AccountNumber: acct, FY: "2025-26", InterestPaid: "0", PrincipalRepaid: "0", Note: "NO ACTIVE HOME LOAN" };
+
+    // ── Consent ceremony (DPDP): OTP issued/verified on the SBI rails ──
+    case "sendotp":
+      return { ResponseStatus: "0", OTPRefNo: `OTP${String(Date.now()).slice(-8)}`, DeliveredTo: "MOBILE XXXXXX" + acct.slice(-4), ValiditySecs: "180" };
+    case "verifyotp":
+      // sandbox mock accepts the fixed demo code 482913
+      return String(body.OTP ?? "") === "482913"
+        ? { ResponseStatus: "0", Verified: "Y", ConsentRefNo: `CNS${String(Date.now()).slice(-8)}` }
+        : { ResponseStatus: "1", Verified: "N", ErrorDescription: "OTP MISMATCH" };
+
+    // ── Act rails ──
+    case "leadgeneration":
+      return { ResponseStatus: "0", LeadId: `LEAD${String(Date.now()).slice(-8)}`, Product: String(body.Product ?? "GENERAL"), AssignedTo: "HOME BRANCH RM", SLA: "T+1 CONTACT" };
+    case "standinginstructionscreate":
+      return { ResponseStatus: "0", SIRefNo: `SI${String(Date.now()).slice(-8)}`, Frequency: String(body.Frequency ?? "MONTHLY"), Status: "ACTIVE" };
+    case "smsalert":
+      return { ResponseStatus: "0", MessageId: `SMS${String(Date.now()).slice(-8)}`, Status: "QUEUED" };
+
     default:
       return null;
   }
 }
+
+// ── CIF-360 portfolio per customer (Linked Account / CIF Associated schema) ──
+const PORTFOLIO: Record<string, { cif: string; accounts: { AccountNumber: string; Type: string; Product: string; Balance: string; Status: string }[] }> = {
+  "30095497360": {
+    cif: "89012340561",
+    accounts: [
+      { AccountNumber: "30095497360", Type: "SBA", Product: "SAVINGS PLUS", Balance: "842156.00", Status: "ACTIVE" },
+      { AccountNumber: "38812204518", Type: "TDA", Product: "SENIOR CITIZEN FD", Balance: "1500000.00", Status: "ACTIVE" },
+      { AccountNumber: "PPF04412876", Type: "PPF", Product: "PUBLIC PROVIDENT FUND", Balance: "486200.00", Status: "ACTIVE" },
+    ],
+  },
+  "30002561085": {
+    cif: "89012387224",
+    accounts: [
+      { AccountNumber: "30002561085", Type: "SBA", Product: "SALARY PACKAGE", Balance: "56780.00", Status: "ACTIVE" },
+      { AccountNumber: "44120987765", Type: "RD", Product: "RECURRING DEPOSIT", Balance: "96000.00", Status: "ACTIVE" },
+      { AccountNumber: "CC5187XXXX", Type: "CC", Product: "SBI CARD PRIME", Balance: "-18450.00", Status: "ACTIVE" },
+    ],
+  },
+  "30002221458": {
+    cif: "89012399810",
+    accounts: [{ AccountNumber: "30002221458", Type: "SBA", Product: "PEHLA KADAM (MINOR)", Balance: "8450.00", Status: "ACTIVE" }],
+  },
+  "30002709704": {
+    cif: "89012311102",
+    accounts: [
+      { AccountNumber: "30002709704", Type: "SBA", Product: "REGULAR SAVINGS", Balance: "150.00", Status: "DORMANT" },
+      { AccountNumber: "37765540921", Type: "TDA", Product: "FIXED DEPOSIT (MATURED)", Balance: "0.00", Status: "CLOSED" },
+    ],
+  },
+};

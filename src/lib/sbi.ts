@@ -165,6 +165,67 @@ export function createDepositAccount() {
   return sbiPost<{ ResponseStatus: string; AccountNumber: string }>("accountcreation/v1", "/customers", {});
 }
 
+// ── CIF-360 + enrichment + compliance + consent + act rails ──
+// Each maps 1:1 to a catalog API (schema-mocked until SBI enables the endpoint).
+
+export type PortfolioAccount = { AccountNumber: string; Type: string; Product: string; Balance: string; Status: string };
+export function getPortfolio(account: string) {
+  return sbiPost<{ ResponseStatus: string; CIFNumber: string; Accounts: PortfolioAccount[] }>(
+    "cifassociatedaccountenquiry/v1", "/accounts", { AccountNumber: account });
+}
+export function getAccountStatus(account: string) {
+  return sbiPost<{ AccountStatus: string; KYCStatus: string; InactiveSince: string }>(
+    "accountstatusenquiry/v1", "/accounts", { AccountNumber: account });
+}
+export function getMAB(account: string) {
+  return sbiPost<{ MAB: { Month: string; Amount: string }[] }>("monthlyaveragebalance/v1", "/accounts", { AccountNumber: account });
+}
+export function getLifeCertificate(account: string) {
+  return sbiPost<{ CertificateStatus: string; DueDate?: string; LastSubmitted?: string; Mode?: string }>(
+    "lifecertificateenquiry/v1", "/pension", { AccountNumber: account });
+}
+export function getNominees(account: string) {
+  return sbiPost<{ Nominees: { Name: string; Relation: string; Share: string }[] }>("nomineesenquiry/v1", "/accounts", { AccountNumber: account });
+}
+export function getEducationLoanEligibility(account: string) {
+  return sbiPost<{ Eligible: string; Schemes: string[]; MaxAmount?: string }>("educationloanenquiry/v1", "/loans", { AccountNumber: account });
+}
+
+// Compliance pre-screen: AML risk + sanctions/name screening + NPA — run BEFORE
+// any next-best-action is allowed to reach a customer.
+export async function complianceScreen(account: string) {
+  const [aml, scr, npa] = await Promise.all([
+    sbiPost<{ AMLRiskCategory: string; LastReviewDate: string }>("amlriskenquiry/v1", "/enquiry", { AccountNumber: account }),
+    sbiPost<{ ScreeningResult: string; Lists: string[] }>("cifnamescreening/v1", "/screening", { AccountNumber: account }),
+    sbiPost<{ NPAStatus: string; IRACCode: string }>("npastatusdetails/v1", "/accounts", { AccountNumber: account }),
+  ]);
+  return {
+    aml: aml.ok ? aml.data.AMLRiskCategory : "UNAVAILABLE",
+    screening: scr.ok ? scr.data.ScreeningResult : "UNAVAILABLE",
+    lists: scr.ok ? scr.data.Lists : [],
+    npa: npa.ok ? npa.data.NPAStatus : "UNAVAILABLE",
+    clear: (aml.ok ? aml.data.AMLRiskCategory !== "HIGH" : false) && (scr.ok ? scr.data.ScreeningResult === "NO MATCH" : false) && (npa.ok ? npa.data.NPAStatus === "STANDARD" : false),
+    ms: Math.max(aml.ms, scr.ms, npa.ms),
+    mock: [(aml as { mock?: boolean }).mock, (scr as { mock?: boolean }).mock, (npa as { mock?: boolean }).mock].some(Boolean),
+  };
+}
+
+// DPDP consent ceremony on SBI rails: OTP to the customer's registered mobile.
+export function sendConsentOtp(account: string) {
+  return sbiPost<{ OTPRefNo: string; DeliveredTo: string; ValiditySecs: string }>("sendotp/v1", "/otp", { AccountNumber: account, Purpose: "AURA_ENGAGEMENT_CONSENT" });
+}
+export function verifyConsentOtp(account: string, otp: string) {
+  return sbiPost<{ Verified: string; ConsentRefNo?: string; ErrorDescription?: string }>("verifyotp/v1", "/otp", { AccountNumber: account, OTP: otp });
+}
+
+// Act rails: a lead on the bank's own lead-management flow, or a standing instruction.
+export function createLead(account: string, product: string, note: string) {
+  return sbiPost<{ LeadId: string; Product: string; AssignedTo: string; SLA: string }>("leadgeneration/v1", "/leads", { AccountNumber: account, Product: product, Note: note });
+}
+export function createStandingInstruction(account: string, product: string, amount: string) {
+  return sbiPost<{ SIRefNo: string; Frequency: string; Status: string }>("standinginstructionscreate/v1", "/si", { AccountNumber: account, Product: product, Amount: amount, Frequency: "MONTHLY" });
+}
+
 // Instant same-bank fund transfer — REAL money movement on the SBI core.
 // Verified live 11 Aug 2026 with the correct per-API IH_CODE (000150):
 // returns a journal number and O.K response.
@@ -525,10 +586,16 @@ export async function buildLiveTwin(account: string, use: UseCase): Promise<Live
   const branch = entry?.branch ?? "00437";
   const hue = entry?.hue ?? 265;
 
-  const [prof, info, bal] = await Promise.all([
+  const [prof, info, bal, port, status, mab, lifeCert, noms, eduLoan] = await Promise.all([
     getCustomerProfile(account, branch),
     sbiPost<CoreEnquiry>("accountenquiryapi/v1", "/accounts", { AccountNumber: account, BRANCH_CODE: branch }),
     getAccountBalance(),
+    getPortfolio(account),
+    getAccountStatus(account),
+    getMAB(account),
+    getLifeCertificate(account),
+    getNominees(account),
+    getEducationLoanEligibility(account),
   ]);
 
   const demo = prof.ok ? readDemographics(prof.data) : null;
@@ -606,6 +673,61 @@ export async function buildLiveTwin(account: string, use: UseCase): Promise<Live
     sig.push({ id: "dm-pii", type: "bureau", label: `PAN ${demo.panMasked} · mobile ${demo.mobileMasked}`, detail: `Identifiers masked here and redacted before any LLM call (DPDP) · city code ${demo.city}`, time: "live", strength: "medium" });
   }
   if (insight) sig.push(...insight.derivedSignals);
+
+  // ── CIF-360: the whole relationship, not one account ──
+  if (port.ok && port.data.Accounts?.length) {
+    const accs = port.data.Accounts;
+    c.products = accs.map((a) => `${a.Product} (${a.Type})${a.Status !== "ACTIVE" ? ` · ${a.Status.toLowerCase()}` : ""}`);
+    const total = accs.reduce((s, a) => s + (parseFloat(a.Balance) || 0), 0);
+    sig.push({
+      id: "cif-360", type: "transaction",
+      label: `CIF 360° · ${accs.length} relationships · ₹${total.toLocaleString("en-IN")}`,
+      detail: `CIF ${port.data.CIFNumber}: ${accs.map((a) => `${a.Product} ₹${Number(a.Balance).toLocaleString("en-IN")} (${a.Status.toLowerCase()})`).join(" · ")} — via CIF Associated Account Enquiry`,
+      time: "live", strength: "high",
+    });
+  }
+
+  // Authoritative core status + MAB trend (no longer only inferred)
+  if (status.ok && status.data.AccountStatus)
+    sig.push({
+      id: "core-status", type: status.data.AccountStatus === "DORMANT" ? "life-event" : "app",
+      label: `Core status: ${status.data.AccountStatus} · ${status.data.KYCStatus}`,
+      detail: `Authoritative Account Status enquiry${status.data.InactiveSince ? ` · inactive since ${status.data.InactiveSince}` : ""}${status.data.KYCStatus !== "KYC COMPLIANT" ? " · KYC refresh due — service-first outreach opportunity" : ""}`,
+      time: "live", strength: status.data.AccountStatus === "DORMANT" ? "high" : "low",
+    });
+  if (mab.ok && mab.data.MAB?.length === 3) {
+    const [a, b2, c3] = mab.data.MAB.map((m) => parseFloat(m.Amount));
+    const dir = c3 > a ? "rising" : c3 < a ? "falling" : "flat";
+    sig.push({
+      id: "mab-trend", type: "transaction",
+      label: `MAB trend ${dir}: ₹${a.toLocaleString("en-IN")} → ₹${c3.toLocaleString("en-IN")}`,
+      detail: `3-month Monthly Average Balance ${mab.data.MAB.map((m) => `${m.Month} ₹${Number(m.Amount).toLocaleString("en-IN")}`).join(" · ")} — ${dir === "rising" ? "growing surplus, capacity conversation" : dir === "falling" ? "tightening liquidity, supportive tone" : "stable"}`,
+      time: "live", strength: dir === "flat" ? "low" : "medium",
+    });
+  }
+
+  // Persona plays straight from the catalog APIs
+  if (lifeCert.ok && lifeCert.data.CertificateStatus === "DUE")
+    sig.unshift({
+      id: "life-cert", type: "life-event",
+      label: `Pension life certificate DUE by ${lifeCert.data.DueDate}`,
+      detail: `Life Certificate Enquiry: last submitted ${lifeCert.data.LastSubmitted}, mode ${lifeCert.data.Mode}. Proactive-service moment: offer a doorstep Jeevan Pramaan visit BEFORE pension disruption — service first, product later.`,
+      time: "live", strength: "high",
+    });
+  if (noms.ok && (noms.data.Nominees?.length ?? 0) === 0)
+    sig.push({
+      id: "nominee-gap", type: "life-event",
+      label: "No nominee registered",
+      detail: "Nominees Enquiry returned none — protection gap. Compliant conversation: register a nominee (Nominee Creation API) before any product talk.",
+      time: "live", strength: "medium",
+    });
+  if (eduLoan.ok && eduLoan.data.Eligible === "Y")
+    sig.push({
+      id: "edu-loan", type: "life-event",
+      label: `Education-loan eligible · up to ₹${Number(eduLoan.data.MaxAmount).toLocaleString("en-IN")}`,
+      detail: `Education Loan Enquiry: eligible for ${eduLoan.data.Schemes.join(", ")} — matches the scholarship-credit signal; guardian-consent journey.`,
+      time: "live", strength: "medium",
+    });
 
   // learning loop: prior officer decisions on this relationship feed back
   // into the twin, so the next swarm run reasons WITH the outcome history

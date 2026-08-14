@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCustomer, AgentStep, NextBestAction } from "@/lib/data";
 import { reason, extractJson } from "@/lib/reasoning";
 import { ops, killGuard, piiScan, recordLatency, recordTrace, logEvent, Span } from "@/lib/ops";
-import { getAccountBalance, resolveLiveCustomer } from "@/lib/sbi";
+import { getAccountBalance, resolveLiveCustomer, complianceScreen } from "@/lib/sbi";
 
 export const maxDuration = 60;
 
@@ -88,6 +88,22 @@ export async function POST(req: NextRequest) {
     note: bal.ok ? `live balance fetched · ${bal.ms}ms` : "sandbox unavailable → twin snapshot used",
   });
 
+  // ── Compliance pre-screen: AML risk + sanctions screening + NPA — run on the
+  //    SBI rails BEFORE any next-best-action may be composed for this customer ──
+  sT = Date.now();
+  const acctForScreen = String(customerId).startsWith("live-") ? String(customerId).slice(5) : "30095497360";
+  const screen = await complianceScreen(acctForScreen);
+  spans.push({
+    name: "compliance.pre-screen · AML + Name Screening + NPA",
+    startMs: sT - t0,
+    durMs: screen.ms,
+    status: screen.clear ? "ok" : "error",
+    note: `AML ${screen.aml} · sanctions ${screen.screening} (${screen.lists.join("/") || "—"}) · NPA ${screen.npa}${screen.mock ? " · schema mock" : ""}`,
+  });
+  if (!screen.clear) {
+    logEvent("compliance", `Pre-screen NOT CLEAR for ••••${acctForScreen.slice(-4)} — engagement blocked before reasoning`, "critical");
+  }
+
   // ── DPDP guard: PII scan BEFORE any text reaches the LLM ──
   sT = Date.now();
   const twinText = `${customer.twinSummary}\n${customer.signals.map((x) => x.detail).join("\n")}`;
@@ -141,8 +157,12 @@ Run the 5-agent swarm and return the JSON — remember: all findings and nba val
   logEvent("swarm", `Swarm finished in ${(totalMs / 1000).toFixed(1)}s · trace ${traceId}`, "info");
 
   // ── deterministic suitability gate: computed server-side, NOT the LLM's
-  //    self-assessment. Age/risk drive real pass|review verdicts (RBI). ──
-  const suitability = computeSuitability(customer.age, (customer as { segment?: string }).segment ?? "", parsed?.nba?.product ?? "");
+  //    self-assessment. Age/risk drive real pass|review verdicts (RBI), and the
+  //    core-side pre-screen (AML/sanctions/NPA) is appended as hard evidence. ──
+  const suitability = [
+    ...computeSuitability(customer.age, (customer as { segment?: string }).segment ?? "", parsed?.nba?.product ?? ""),
+    { rule: `AML risk ${screen.aml} · sanctions ${screen.screening} · asset ${screen.npa} (core pre-screen)`, status: (screen.clear ? "pass" : "review") as "pass" | "review" },
+  ];
 
   if (parsed) {
     parsed.nba.compliance = suitability; // override model output with the rules-engine verdict

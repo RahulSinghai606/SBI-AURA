@@ -272,12 +272,18 @@ export default function DemoPage() {
 
   const [execBusy, setExecBusy] = useState(false);
   const [execResult, setExecResult] = useState<string | null>(null);
+  const [consent, setConsent] = useState<{ otpRef: string; deliveredTo: string } | null>(null);
+  const [otpValue, setOtpValue] = useState("");
+  const [otpError, setOtpError] = useState(false);
 
-  // the agent PROPOSES the action — a human officer must approve it on /ops
-  // before anything touches the SBI core (maker-checker)
+  // DPDP consent ceremony → maker-checker proposal. Click 1 issues an OTP to the
+  // customer's registered mobile (SBI OTP rails) — the CUSTOMER authorises the
+  // engagement. Click 2 verifies the OTP and files the proposal; a human officer
+  // still approves on /ops before anything touches the SBI core.
   const executeNba = async () => {
     if (execBusy || execResult) return;
     setExecBusy(true);
+    setOtpError(false);
     try {
       const r = await fetch("/api/sbi/execute", {
         method: "POST",
@@ -286,6 +292,7 @@ export default function DemoPage() {
           customer: customer.name,
           account: customer.id.startsWith("live-") ? customer.id.slice(5) : "",
           summary: nba ? `${nba.action} — ${nba.product}` : "Open deposit account (agent-recommended)",
+          ...(consent ? { otp: otpValue } : {}),
         }),
       });
       if (r.status === 423) {
@@ -293,8 +300,17 @@ export default function DemoPage() {
         setExecBusy(false);
         return;
       }
+      if (r.status === 401) {
+        setOtpError(true);
+        setExecBusy(false);
+        return;
+      }
       const d = await r.json();
-      if (d.proposed) setExecResult(d.action.id);
+      if (d.consentPending) setConsent({ otpRef: d.otpRef, deliveredTo: d.deliveredTo });
+      if (d.proposed) {
+        setExecResult(d.action.id);
+        setConsent(null);
+      }
     } catch {}
     setExecBusy(false);
   };
@@ -745,18 +761,36 @@ export default function DemoPage() {
                             <MessageCircle className="w-4.5 h-4.5 w-[18px] h-[18px]" />
                             Deliver via {nba.channel.split(" ")[0]} — open conversation
                           </button>
+                          {consent && !execResult && (
+                            <div className="rounded-xl border border-teal/40 bg-teal/5 p-3 space-y-2" data-noi18n>
+                              <p className="text-[11px] font-bold text-teal">🔐 DPDP consent — OTP sent to {consent.deliveredTo} ({consent.otpRef})</p>
+                              <p className="text-[10px] text-ink-faint">The customer authorises this engagement, not the bank. Sandbox demo code: <span className="font-mono font-bold">482913</span></p>
+                              <input
+                                value={otpValue}
+                                onChange={(e) => setOtpValue(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                                placeholder="Enter 6-digit OTP"
+                                inputMode="numeric"
+                                className={`w-full rounded-lg border px-3 py-2 text-sm font-mono tracking-[0.3em] text-center outline-none ${otpError ? "border-red-400 bg-red-50" : "border-teal/40 bg-white"}`}
+                              />
+                              {otpError && <p className="text-[10px] font-bold text-red-500 text-center">OTP mismatch — consent not verified</p>}
+                            </div>
+                          )}
                           <button
                             onClick={executeNba}
-                            disabled={execBusy || Boolean(execResult)}
+                            disabled={execBusy || Boolean(execResult) || (Boolean(consent) && otpValue.length !== 6)}
                             className={`w-full inline-flex items-center justify-center gap-2 rounded-xl font-semibold py-3.5 transition-all card-elevate disabled:cursor-not-allowed ${
                               execResult ? "bg-teal/10 text-teal border border-teal/40" : "bg-navy text-white hover:bg-sbi disabled:opacity-70"
                             }`}
                           >
                             {execResult
-                              ? "✓ PROPOSED — awaiting officer approval (maker-checker)"
+                              ? "✓ CONSENTED & PROPOSED — awaiting officer approval"
                               : execBusy
-                                ? "Filing action on the approval queue…"
-                                : "Propose action on SBI core — open deposit account"}
+                                ? consent
+                                  ? "Verifying consent on SBI OTP rails…"
+                                  : "Issuing consent OTP to the customer…"
+                                : consent
+                                  ? "Verify consent & file on approval queue"
+                                  : "Propose action — customer consent via OTP first"}
                           </button>
                           {execResult && (
                             <p className="text-[10px] text-ink-faint text-center">
