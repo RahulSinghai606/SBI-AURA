@@ -227,16 +227,16 @@ export function createStandingInstruction(account: string, product: string, amou
 }
 
 // Instant same-bank fund transfer — REAL money movement on the SBI core.
-// Verified live 11 Aug 2026 with the correct per-API IH_CODE (000150):
-// returns a journal number and O.K response.
+// Verified live 14 Aug 2026 on the official test accounts issued by SBI InnoHub
+// Support (credit ...0690445 / debit ...0690626): journal 995632343, "O.K".
 export function c2cFundTransfer(amountPaisa = "100", narration = "AURA/NBA/SWEEP/PMT") {
   return sbiPost<{ Responsestatus: string; JournalNumber: string; ResponseDescription: string; Date: string }>(
     "CustomertoCustomerFundTransfer/v1",
     "/fundTransfer",
     {
       BRANCH_CODE: "04266",
-      CreditAccount: "00000030095706067",
-      DebitAccount: "00000030095706056",
+      CreditAccount: "00000038000690445",
+      DebitAccount: "00000038000690626",
       StatementNarrative: narration,
       TransactionAmount: amountPaisa,
     }
