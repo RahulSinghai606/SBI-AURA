@@ -16,8 +16,8 @@
   "/api/translate/route": "/api/translate",
   "/api/tts/route": "/api/tts",
   "/demo/page": "/demo",
-  "/favicon.ico/route": "/favicon.ico",
   "/gate/page": "/gate",
+  "/icon.png/route": "/icon.png",
   "/ops/page": "/ops",
   "/page": "/"
 }
