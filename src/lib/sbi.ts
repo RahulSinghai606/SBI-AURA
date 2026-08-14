@@ -68,6 +68,23 @@ async function sbiPost<T>(service: string, path: string, body: Record<string, un
     return { ok: false, error: err, ms: Date.now() - t0 };
   };
 
+  // Services SBI has not yet enabled for our subscription (no live endpoint to
+  // call) — in auto mode these serve the schema mock immediately instead of
+  // burning a 15s timeout per call. Drop a service from this set the moment SBI
+  // enables it (or force everything live with SBI_MODE=live).
+  const PENDING_AT_SBI = new Set([
+    "cifassociatedaccountenquiry", "accountstatusenquiry", "monthlyaveragebalance",
+    "amlriskenquiry", "cifnamescreening", "npastatusdetails",
+    "lifecertificateenquiry", "pensionslipenquiry", "nomineesenquiry",
+    "educationloanenquiry", "homeloanintcertificate",
+    "sendotp", "verifyotp", "leadgeneration", "standinginstructionscreate", "smsalert",
+  ]);
+  const svcKey = service.split("/")[0];
+  if (MODE === "auto" && PENDING_AT_SBI.has(svcKey)) {
+    const mk = serveMock();
+    if (mk) { s.counters.sbiApiCalls++; return mk; }
+  }
+
   // Mock-only mode, or no token configured → serve the schema mock straight away.
   if (MODE === "mock" || !process.env.SBI_API_TOKEN) {
     const mk = serveMock();
