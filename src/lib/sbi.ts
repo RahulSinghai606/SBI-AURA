@@ -30,6 +30,8 @@ const IH_CODES: Record<string, string> = {
   CustomertoCustomerFundTransfer: "000150",
   NEFTFundTransfer: "000148",
   accountcreation: "000052",
+  accflagenq: "000022", // Account Flag Enquiry — subscribed & verified live 14 Aug 2026
+  accmobnumberenq: "000007", // Account Mobile Number Enquiry — subscribed & verified live 14 Aug 2026
 };
 
 // Last-good cache: the InnoHub sandbox APIs drift day to day (fields added,
@@ -109,12 +111,16 @@ async function sbiPost<T>(service: string, path: string, body: Record<string, un
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(15000),
     });
-    const data = (await res.json()) as T & { ErrorDescription?: string; status?: string };
+    const data = (await res.json()) as T & { ErrorDescription?: string; Errordescription?: string; ResponseStatus?: string; Responsestatus?: string; status?: string };
     s.counters.sbiApiCalls++;
     const ms = Date.now() - t0;
-    if (!res.ok || data?.ErrorDescription) {
+    const coreError =
+      data?.ErrorDescription || data?.Errordescription ||
+      ((data?.ResponseStatus ?? data?.Responsestatus) !== undefined && (data?.ResponseStatus ?? data?.Responsestatus) !== "0"
+        ? `core status ${data?.ResponseStatus ?? data?.Responsestatus}` : "");
+    if (!res.ok || coreError) {
       s.counters.errors++;
-      return serveCache(data?.ErrorDescription ?? `HTTP ${res.status}`);
+      return serveCache(coreError || `HTTP ${res.status}`);
     }
     logEvent("sbi-api", `${service} responded in ${ms}ms`, "info");
     // data-plane lineage: which API, which account (masked), how many fields
@@ -206,6 +212,32 @@ export function getNominees(account: string) {
 }
 export function getEducationLoanEligibility(account: string) {
   return sbiPost<{ Eligible: string; Schemes: string[]; MaxAmount?: string }>("educationloanenquiry/v1", "/loans", { AccountNumber: account });
+}
+
+// Account Flag Enquiry — authoritative core flags (PENSIONER, MINOR/ADULT, VIP,
+// FID exemptions...). Subscribed & verified live on the InnoHub sandbox.
+export type CoreFlags = Record<string, string> & { ResponseStatus?: string };
+export function getAccountFlags(account: string) {
+  const padded = account.padStart(17, "0");
+  return sbiPost<CoreFlags>("accflagenq/enquiry", "/enquiry", { AccountNumber: padded });
+}
+// Distil the raw FLAGn/FLAGn_LONG_DESCRIPTION matrix into set-flag labels.
+export function readCoreFlags(f: CoreFlags): string[] {
+  const set: string[] = [];
+  for (let i = 1; i <= 20; i++) {
+    const v = (f[`FLAG${i}`] ?? "").trim();
+    const label = (f[`FLAG${i}_LONG_DESCRIPTION`] ?? f[`FLAG${i}_SHORT_DESCRIPTION`] ?? "").trim();
+    if (v && label && label !== "UNUSED") set.push(`${label}: ${v}`);
+  }
+  return set;
+}
+
+// Account Mobile Number Enquiry — registered mobile + verification status.
+// Subscribed & verified live on the InnoHub sandbox.
+export function getMobileNumber(account: string) {
+  const padded = account.padStart(17, "0");
+  return sbiPost<{ Mobilenumber: string; Oldmobilenumber?: string; Cifnumber?: string; Verificationflag?: string; Email1?: string; Responsestatus?: string }>(
+    "accmobnumberenq/v1", "/enquiry", { CifAccountNumber: padded });
 }
 
 // Compliance pre-screen: AML risk + sanctions/name screening + NPA — run BEFORE
@@ -603,7 +635,7 @@ export async function buildLiveTwin(account: string, use: UseCase): Promise<Live
   const branch = entry?.branch ?? "00437";
   const hue = entry?.hue ?? 265;
 
-  const [prof, info, bal, port, status, mab, lifeCert, noms, eduLoan] = await Promise.all([
+  const [prof, info, bal, port, status, mab, lifeCert, noms, eduLoan, flags, mob] = await Promise.all([
     getCustomerProfile(account, branch),
     sbiPost<CoreEnquiry>("accountenquiryapi/v1", "/accounts", { AccountNumber: account, BRANCH_CODE: branch }),
     getAccountBalance(),
@@ -613,6 +645,8 @@ export async function buildLiveTwin(account: string, use: UseCase): Promise<Live
     getLifeCertificate(account),
     getNominees(account),
     getEducationLoanEligibility(account),
+    getAccountFlags(account),
+    getMobileNumber(account),
   ]);
 
   const demo = prof.ok ? readDemographics(prof.data) : null;
@@ -738,6 +772,26 @@ export async function buildLiveTwin(account: string, use: UseCase): Promise<Live
       detail: "Nominees Enquiry returned none — protection gap. Compliant conversation: register a nominee (Nominee Creation API) before any product talk.",
       time: "live", strength: "medium",
     });
+  // Authoritative core flags (Account Flag Enquiry — live SBI API)
+  if (flags.ok && flags.data.ResponseStatus === "0") {
+    const setFlags = readCoreFlags(flags.data);
+    sig.push({
+      id: "core-flags", type: "life-event",
+      label: setFlags.length ? `Core flags: ${setFlags.slice(0, 3).join(" · ")}` : "Core flags: clean — no restrictive flags",
+      detail: `Account Flag Enquiry (live SBI API): ${setFlags.length ? setFlags.join(" · ") : "no PENSIONER/MINOR/VIP/FID restrictions set"} — authoritative persona proof from the core, not inference`,
+      time: (flags as { mock?: boolean }).mock ? "mock" : "live", strength: setFlags.length ? "high" : "low",
+    });
+  }
+  // Registered mobile + verification status (Account Mobile Number Enquiry — live SBI API)
+  if (mob.ok && mob.data.Mobilenumber) {
+    const unverified = mob.data.Verificationflag === "N";
+    sig.push({
+      id: "rmn", type: unverified ? "life-event" : "app",
+      label: unverified ? "Registered mobile UNVERIFIED — service nudge" : `RMN verified · ••••${mob.data.Mobilenumber.slice(-4)}`,
+      detail: `Account Mobile Number Enquiry (live SBI API): RMN ••••${mob.data.Mobilenumber.slice(-4)}${mob.data.Cifnumber ? ` · CIF ••••${mob.data.Cifnumber.slice(-4)}` : ""} · verification flag ${mob.data.Verificationflag ?? "—"}${unverified ? " — perfect service-first outreach: verify the mobile before any product conversation" : ""}`,
+      time: (mob as { mock?: boolean }).mock ? "mock" : "live", strength: unverified ? "high" : "low",
+    });
+  }
   if (eduLoan.ok && eduLoan.data.Eligible === "Y")
     sig.push({
       id: "edu-loan", type: "life-event",

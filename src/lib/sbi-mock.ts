@@ -72,7 +72,7 @@ const PROFILE: Record<string, Record<string, string>> = {
 };
 
 function acctOf(body: Record<string, unknown>): string {
-  return String(body.AccountNumber ?? body.corporateAccountNumber ?? "").replace(/^0+/, "") || "30095497360";
+  return String(body.AccountNumber ?? body.CifAccountNumber ?? body.corporateAccountNumber ?? "").replace(/^0+/, "") || "30095497360";
 }
 
 // Return a schema-faithful mock for the given InnoHub service, or null if the
@@ -178,6 +178,28 @@ export function mockFor(service: string, body: Record<string, unknown>): unknown
       return String(body.OTP ?? "") === "482913"
         ? { ResponseStatus: "0", Verified: "Y", ConsentRefNo: `CNS${String(Date.now()).slice(-8)}` }
         : { ResponseStatus: "1", Verified: "N", ErrorDescription: "OTP MISMATCH" };
+
+    // Account Flag Enquiry (live for SBI test accounts; persona mocks for roster)
+    case "accflagenq": {
+      const F: Record<string, Record<string, string>> = {
+        "30095497360": { FLAG7: "Y", FLAG7_LONG_DESCRIPTION: "PENSIONERS", FLAG10: "V", FLAG10_LONG_DESCRIPTION: "VIP DETAILS", FLAG20: "A", FLAG20_LONG_DESCRIPTION: "ADULT" },
+        "30002561085": { FLAG20: "A", FLAG20_LONG_DESCRIPTION: "ADULT" },
+        "30002221458": { FLAG20: "M", FLAG20_LONG_DESCRIPTION: "MINOR" },
+        "30002709704": {},
+      };
+      return { ResponseStatus: "0", ErrorDescription: "", ...(F[acct] ?? {}) };
+    }
+    // Account Mobile Number Enquiry
+    case "accmobnumberenq": {
+      const M: Record<string, { m: string; v: string }> = {
+        "30095497360": { m: "9172142588", v: "Y" },
+        "30002561085": { m: "8975421047", v: "Y" },
+        "30002221458": { m: "8500183934", v: "Y" },
+        "30002709704": { m: "8855996645", v: "N" }, // unverified — service-first win-back nudge
+      };
+      const e = M[acct] ?? M["30095497360"];
+      return { Responsestatus: "0", Mobilenumber: e.m, Oldmobilenumber: e.m, Cifnumber: `000000950841${acct.slice(-5)}`, Isdcode: "91", Verificationflag: e.v, Errordescription: "" };
+    }
 
     // ── Act rails ──
     case "leadgeneration":
